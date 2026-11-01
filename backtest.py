@@ -282,12 +282,35 @@ def walk_forward(nimi, tehdas_fn, ruudukko, data, rek, alku=None, loppu=None, tr
         r = aja(tehdas_fn(**paras), data, c, d, rek, nimi, paras, "wf-oos")
         osat.append(r["arvot"])
         foldit.append({"train": (a, b), "testi": (c, d), "valittu": paras, "train_sharpe": paras_s,
-                       "oos_tuotto": (r["mittarit"] or {}).get("tuotto")})
+                       "oos_tuotto": (r["mittarit"] or {}).get("tuotto"),
+                       "oos_sharpe": (r["mittarit"] or {}).get("sharpe_pa")})
         if edistyminen:
             edistyminen(i + 1, foldit[-1])
     arvot = _ketju(osat)
     return {"arvot": arvot, "mittarit": mit.mittarit(arvot), "foldit": foldit,
             "ikkunat": [(f["testi"][0], f["testi"][1]) for f in foldit]}
+
+
+def ylisovitus(wf):
+    """Ylisovituksen mittari: opetusjakson (valittu paras) Sharpe vs testijakson Sharpe foldeittain.
+    Iso positiivinen ero = valinta sovittui opetusdataan eika yleistynyt. Vain raportointi, ei paatossaantoa."""
+    pari = [(f["train_sharpe"], f.get("oos_sharpe")) for f in wf["foldit"]
+            if f.get("train_sharpe") is not None and f["train_sharpe"] > -1e8 and f.get("oos_sharpe") is not None]
+    n = len(wf["foldit"])
+    if not pari:
+        return {"foldeja": n, "pareja": 0, "train_sharpe": None, "oos_sharpe": None, "ero": None, "oos_positiivisia": None}
+    tr = sum(a for a, _ in pari) / len(pari)
+    oo = sum(b for _, b in pari) / len(pari)
+    pos = sum(1 for f in wf["foldit"] if f.get("oos_tuotto") is not None and f["oos_tuotto"] > 0)
+    return {"foldeja": n, "pareja": len(pari), "train_sharpe": tr, "oos_sharpe": oo, "ero": tr - oo, "oos_positiivisia": pos}
+
+
+def ylisovitus_teksti(y):
+    if not y or y["ero"] is None:
+        return "Ylisovitus: ei laskettavissa (%d foldia)" % (y or {}).get("foldeja", 0)
+    return "Ylisovitus: opetus-Sharpe %.2f vs testi-Sharpe %.2f (ero %+.2f, %d/%d foldia testituotto > 0)%s" % (
+        y["train_sharpe"], y["oos_sharpe"], y["ero"], y["oos_positiivisia"], y["foldeja"],
+        " -> VAHVA YLISOVITUS" if y["ero"] > 1.0 else "")
 
 
 def _per(x, w):

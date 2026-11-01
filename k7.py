@@ -323,6 +323,8 @@ def testaa(spec, data, rek, nimi, perhe, satunnaisia=None, edistyminen=None, wf_
     t = bt.teksti("%s (ruudukko %d x perhebudjetti %d = korjaus %d; perhe nyt %d/%d)" % (
         nimi, len(ruudukko), K7_PERHE_BUDJETTI, kerroin, perhe, K7_PERHE_BUDJETTI), a, bt.kokeiluja(rek),
         rehellinen=hasattr(data, "kuollut"))
+    a["ylisovitus"] = bt.ylisovitus(wf)
+    t += "\n" + bt.ylisovitus_teksti(a["ylisovitus"])
     return a, t
 
 
