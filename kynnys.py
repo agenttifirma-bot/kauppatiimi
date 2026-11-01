@@ -1,6 +1,7 @@
 """No-trade band: kauppaa ei tehda, jos tavoitepainon muutos on alle kynnyksen (kulujen saasto).
 Suodatus tehdaan ENNEN salkkua: salkku.py, riskivahti.py ja rajat.py ovat koskemattomia. Salkku siivoaa tuloksen silti omilla rajoillaan.
 Vain lukeminen: salkkuun ei kirjoiteta. Jos suodatus ei onnistu, ehdotus palautetaan sellaisenaan."""
+import os
 from datetime import datetime, timezone
 
 import rajat
@@ -9,6 +10,18 @@ import salkku
 
 # Kovakoodattu oletus. 0.0 = pois paalta (kayttaytyminen ennallaan). Kayttoonoton paattaa Tony.
 KYNNYS_PP = 0.0
+KYNNYS_MAX_PP = 5.0   # ylaraja: isompi arvo tulkitaan virheeksi (kauppa ei saa kuolla kynnykseen)
+
+
+def lue_ymparisto(env=None):
+    """Kynnys ymparistomuuttujasta KAUPPA_KYNNYS_PP (pp). Puuttuva, virheellinen, negatiivinen tai yli ylarajan -> 0.0 (pois).
+    Vain Tony asettaa muuttujan (systemd-ymparisto); koodi ei muuta rajoja."""
+    env = os.environ if env is None else env
+    try:
+        v = float(env.get("KAUPPA_KYNNYS_PP", "0"))
+    except (TypeError, ValueError):
+        return 0.0
+    return v if 0.0 < v <= KYNNYS_MAX_PP else 0.0
 
 
 def _avaushinnat(markkina, paiva, symbolit):
@@ -25,7 +38,7 @@ def _avaushinnat(markkina, paiva, symbolit):
 def suodata(con, markkina, paiva, ehdotus, sallitut, kynnys_pp=None):
     """Palauttaa ehdotuksen, jossa pienet painomuutokset on korvattu nykypainolla (ei kauppaa).
     Tavoite 0 (poistuminen) ja ehdotuksesta puuttuva kolikko (= myy pois) eivat jaa kynnyksen taakse."""
-    kp = KYNNYS_PP if kynnys_pp is None else kynnys_pp
+    kp = (KYNNYS_PP or lue_ymparisto()) if kynnys_pp is None else kynnys_pp
     if kp <= 0 or not isinstance(ehdotus, dict):
         return ehdotus
     try:
