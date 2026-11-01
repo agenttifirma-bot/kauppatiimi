@@ -136,6 +136,21 @@ def _kirjaa_tapahtuma(sal, paiva, ryhma, malli, t, kesto):
         pass
 
 
+def passiivirivi(markkina, aloitus, paiva_iso, salkun_tuotto):
+    """Rivi 'vs. BTC osta ja pida / DCA'. Lukee vain BTC-hinnat; virhe ei koskaan kaada raporttia."""
+    try:
+        if not aloitus or aloitus > paiva_iso:
+            return mittarit.vertailurivi(0.0, None)
+        a0, p = date.fromisoformat(aloitus), date.fromisoformat(paiva_iso)
+        luku = {}
+        for sarake in ("open", "close"):
+            luku[sarake] = {datetime.fromtimestamp(ts / 1000, timezone.utc).date(): v for ts, v in markkina.execute(
+                "SELECT ts, %s FROM hinnat WHERE symbol='BTCUSDT' AND ts>=? AND ts<=?" % sarake, (_ms(a0), _ms(p))).fetchall()}
+        return mittarit.vertailurivi(salkun_tuotto, mittarit.passiiviset(luku["open"], luku["close"], a0, p))
+    except (sqlite3.Error, ValueError, TypeError) as e:
+        return "vs. BTC osta ja pida / DCA: ei saatavilla (%s)" % type(e).__name__
+
+
 def raportti(tulos, sal, markkina):
     sim = tulos["sim"]
     rivit = ["Kauppatiimi (%s) %s" % (tulos["malli"], tulos["paiva"])]
@@ -168,6 +183,7 @@ def raportti(tulos, sal, markkina):
     except salkku.Datavirhe:
         rivi += " | vertailu ei saatavilla"
     rivit.append(rivi)
+    rivit.append(passiivirivi(markkina, aloitus, tulos["paiva"], tuotto))
     try:
         kaupat = sal.execute("SELECT paiva, symbol, puoli, maara, hinta, kulu FROM kaupat ORDER BY id").fetchall()
         rivit.append(verorap.rivi(kaupat, tulos["paiva"][:4]))
