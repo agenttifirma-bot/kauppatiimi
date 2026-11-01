@@ -14,6 +14,7 @@ import db
 import llm
 import mittarit
 import kynnys
+import tasapainotus
 import notify
 import raportti as verorap
 import rajat
@@ -115,6 +116,7 @@ def aja_paiva(paiva, malli, markkina, sal, env, hae_llm=None, malli_avain=None):
             tulos["virhe"] = "%s: %s" % (type(e).__name__, e)
             ehdotus = None
     ehdotus = kynnys.suodata(sal, markkina, paiva, ehdotus, sallitut)   # no-trade band (oletus pois)
+    ehdotus = tasapainotus.suodata(sal, markkina, paiva, ehdotus, sallitut)   # koe 1: tasapainotustiheys (oletus pois)
     sim = salkku.suorita_paiva(sal, markkina, paiva, ehdotus, sallitut)
     tulos["sim"] = sim
     return tulos
