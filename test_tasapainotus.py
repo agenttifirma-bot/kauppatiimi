@@ -23,15 +23,12 @@ def ajo(ehdotukset, n, hinnat=None, alkupaoma=10000.0):
 class TasapainotusTesti(unittest.TestCase):
     def test_oletus_pois(self):
         self.assertEqual(tp.lue_ymparisto({}), 0)
-        self.assertEqual(tp.lue_ymparisto({"KAUPPA_REB_PV": "7"}), 0)          # ilman PAALLA-lippua ei mitaan
-        self.assertEqual(tp.lue_ymparisto({"KAUPPA_REB_PAALLA": "0", "KAUPPA_REB_PV": "7"}), 0)
         e = {"BTCUSDT": 0.1}
         self.assertIs(tp.suodata(None, None, ALKU, e, S), e)                    # ymparistomuuttujat puuttuvat -> ennallaan
 
     def test_ymparisto(self):
-        self.assertEqual(tp.lue_ymparisto({"KAUPPA_REB_PAALLA": "1"}), 7)       # oletus 7
         for arvo, odotus in (("3", 3), (" 14 ", 14), ("1", 0), ("0", 0), ("31", 0), ("-2", 0), ("abc", 0), ("7.5", 0), ("", 0)):
-            self.assertEqual(tp.lue_ymparisto({"KAUPPA_REB_PAALLA": "1", "KAUPPA_REB_PV": arvo}), odotus, arvo)
+            self.assertEqual(tp.lue_ymparisto({"KAUPPA_TASAPAINOTUS_PV": arvo}), odotus, arvo)
 
     def test_n1_ennallaan(self):
         e = {"BTCUSDT": 0.1}

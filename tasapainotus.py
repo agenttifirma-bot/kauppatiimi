@@ -2,24 +2,21 @@
 (riskivahdin myynnit tapahtuvat silti: salkku.py rajaa positiot MAX_POSITIO:on ja kateispuskuriin, ja hatajarru toimii ennallaan).
 Suodatus tehdaan ENNEN salkkua: salkku.py, riskivahti.py ja rajat.py ovat koskemattomia. Vain lukeminen.
 
-OLETUS POIS: paalle vain ymparistomuuttujalla KAUPPA_REB_PAALLA=1. Tiheys KAUPPA_REB_PV (oletus 7, sallittu 2..30;
-virheellinen arvo -> koe pois paalta). Vain Tony asettaa muuttujat (systemd-ymparisto)."""
+OLETUS POIS (= tasapainotus joka paiva): paalle vain ymparistomuuttujalla KAUPPA_TASAPAINOTUS_PV=N (sallittu 2..30;
+puuttuva tai virheellinen arvo -> koe pois paalta). Suositeltu kokeiluarvo 7. Vain Tony asettaa muuttujan (systemd-ymparisto)."""
 import os
 from datetime import date, datetime, timezone
 
 import salkku
 
-REB_OLETUS = 7
 REB_MIN, REB_MAX = 2, 30
 
 
 def lue_ymparisto(env=None):
-    """Palauttaa N (2..30) jos KAUPPA_REB_PAALLA=1 ja KAUPPA_REB_PV kelvollinen, muuten 0 (pois)."""
+    """Palauttaa N (2..30) jos KAUPPA_TASAPAINOTUS_PV on kelvollinen, muuten 0 (pois = joka paiva)."""
     env = os.environ if env is None else env
-    if env.get("KAUPPA_REB_PAALLA") != "1":
-        return 0
     try:
-        n = int(str(env.get("KAUPPA_REB_PV", REB_OLETUS)).strip())
+        n = int(str(env.get("KAUPPA_TASAPAINOTUS_PV", "")).strip())
     except (TypeError, ValueError):
         return 0
     return n if REB_MIN <= n <= REB_MAX else 0
