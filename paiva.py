@@ -13,6 +13,7 @@ import config
 import db
 import llm
 import mittarit
+import konsensus
 import kynnys
 import notify
 import raportti as verorap
@@ -114,6 +115,9 @@ def aja_paiva(paiva, malli, markkina, sal, env, hae_llm=None, malli_avain=None):
                 _kirjaa_kutsu(sal, paiva, rooli, malli, e.kaytto)   # kelvoton vastaus kuluttaa silti paivakiintiota
             tulos["virhe"] = "%s: %s" % (type(e).__name__, e)
             ehdotus = None
+    if konsensus.kaytossa():   # oletus pois (KAUPPA_KONSENSUS=1): kauppa vain jos toinen malli on samaa mieltä
+        toinen = {"flash": "pro", "pro": "flash"}.get(malli_avain)
+        ehdotus = konsensus.suodata(sal, markkina, paiva, ehdotus, konsensus.lue_ehdotus(rajat.SALKUT.get(toinen), paiva), sallitut, True)
     ehdotus = kynnys.suodata(sal, markkina, paiva, ehdotus, sallitut)   # no-trade band (oletus pois)
     sim = salkku.suorita_paiva(sal, markkina, paiva, ehdotus, sallitut)
     tulos["sim"] = sim
