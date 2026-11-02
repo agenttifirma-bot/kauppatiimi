@@ -80,5 +80,37 @@ class PassiivisetTesti(unittest.TestCase):
         self.assertIn("ei saatavilla", paiva.passiivirivi(con, "virhe", "2026-10-20", 0.0))
 
 
+class KertymaRiviTesti(unittest.TestCase):
+    """Kasin lasketut odotusarvot: avaus 100, sulku 200, K = (1+liukuma)(1+kulu)."""
+
+    def _rivi(self, paivia_yht, puuttuu=(), salkku_tuotto=1.0, loppu=5):
+        con = db.avaa(":memory:")
+        rivit = [(paiva._ms(A + timedelta(days=i)), 100.0, 0, 0, 200.0, 1.0, 1.0, 1)
+                 for i in range(paivia_yht) if i not in puuttuu]
+        db.lisaa_hinnat(con, "BTCUSDT", rivit)
+        return paiva.passiivirivi(con, A.isoformat(), (A + timedelta(days=loppu)).isoformat(), salkku_tuotto)
+
+    def test_kasin_laskettu_rivi_ja_paivat(self):
+        # osta ja pida: 2/K - 1 = 99,6006 %, ero salkkuun (100 %) = +0,40 pp
+        # DCA, vain 1. era ostettu: (2/K - 1)/3 = 33,2002 %, ero = +66,80 pp
+        self.assertEqual(self._rivi(6),
+                         "vs. BTC osta ja pida: +0.40 %-yks, vs. DCA: +66.80 %-yks (5 pv, alle portin 1 aikarajan)")
+
+    def test_puuttuva_paiva_ja_puuttuva_loppupaiva(self):
+        # paiva 2 puuttuu keskelta ja loppupaiva 5 puuttuu: sama tulos (edellinen sulku 200)
+        self.assertEqual(self._rivi(6, puuttuu=(2, 5)),
+                         "vs. BTC osta ja pida: +0.40 %-yks, vs. DCA: +66.80 %-yks (5 pv, alle portin 1 aikarajan)")
+
+    def test_90_paivaa_ei_alle_rajan_merkintaa(self):
+        teksti = self._rivi(95, loppu=90)
+        self.assertTrue(teksti.endswith("(90 pv)"), teksti)
+        self.assertNotIn("alle portin 1", teksti)
+        self.assertIn("alle portin 1 aikarajan", self._rivi(95, loppu=89))
+
+    def test_ilman_paivia_vanha_muoto(self):
+        av, su = sarja(2)
+        self.assertNotIn(" pv", mittarit.vertailurivi(0.0, mittarit.passiiviset(av, su, A, A + timedelta(days=1))))
+
+
 if __name__ == "__main__":
     unittest.main()
