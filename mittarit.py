@@ -111,10 +111,17 @@ def passiiviset(avaukset, sulut, alku, paiva, alkupaoma=None):
     return {"osta_ja_pida": (bh, bh / pao - 1), "dca": (dca, dca / pao - 1)}
 
 
-def vertailurivi(salkun_tuotto, passiivinen):
+PORTTI1_PV = 90     # portti 1: voitettava vertailusalkku vahintaan 3 kk paperilla
+
+
+def vertailurivi(salkun_tuotto, passiivinen, paivia=None):
     """Yksi raporttirivi: salkun ja passiivisten tuottojen ero prosenttiyksikkoina (+ = salkku voittaa).
+    paivia = alkupaivasta kulunut paivamaara; alle PORTTI1_PV:n rivi kertoo, ettei portin 1 aikaraja tayty.
     Ei hintoja -> 'ei saatavilla'."""
     if passiivinen is None:
         return "vs. BTC osta ja pida: ei saatavilla, vs. DCA: ei saatavilla"
-    return "vs. BTC osta ja pida: %+.2f %%-yks, vs. DCA: %+.2f %%-yks" % (
+    teksti = "vs. BTC osta ja pida: %+.2f %%-yks, vs. DCA: %+.2f %%-yks" % (
         100 * (salkun_tuotto - passiivinen["osta_ja_pida"][1]), 100 * (salkun_tuotto - passiivinen["dca"][1]))
+    if paivia is not None:
+        teksti += " (%d pv%s)" % (paivia, ", alle portin 1 aikarajan" if paivia < PORTTI1_PV else "")
+    return teksti

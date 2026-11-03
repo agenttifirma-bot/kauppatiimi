@@ -146,7 +146,7 @@ def passiivirivi(markkina, aloitus, paiva_iso, salkun_tuotto):
         for sarake in ("open", "close"):
             luku[sarake] = {datetime.fromtimestamp(ts / 1000, timezone.utc).date(): v for ts, v in markkina.execute(
                 "SELECT ts, %s FROM hinnat WHERE symbol='BTCUSDT' AND ts>=? AND ts<=?" % sarake, (_ms(a0), _ms(p))).fetchall()}
-        return mittarit.vertailurivi(salkun_tuotto, mittarit.passiiviset(luku["open"], luku["close"], a0, p))
+        return mittarit.vertailurivi(salkun_tuotto, mittarit.passiiviset(luku["open"], luku["close"], a0, p), (p - a0).days)
     except (sqlite3.Error, ValueError, TypeError) as e:
         return "vs. BTC osta ja pida / DCA: ei saatavilla (%s)" % type(e).__name__
 
