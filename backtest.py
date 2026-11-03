@@ -154,6 +154,24 @@ def kirjaa(rek, nimi, parametrit, jakso, alku, loppu, m, kauppoja):
     rek.commit()
 
 
+PAIVATUOTTO_SKEEMA = """
+CREATE TABLE IF NOT EXISTS paivatuotot (
+  nimi TEXT NOT NULL, jakso TEXT NOT NULL, versio TEXT NOT NULL, alku TEXT NOT NULL, paiva TEXT NOT NULL,
+  tuotto REAL NOT NULL, PRIMARY KEY (nimi, jakso, versio, paiva));
+"""
+
+
+def kirjaa_paivatuotot(rek, nimi, jakso, alku, paivat, arvot):
+    """Valinnainen paivatuottojen tallennus (paperiajon mittaus). paivat[i] on arvot[i+1]:n paiva; arvot[0] on alkupaoma.
+    Tuotto = arvot[i]/arvot[i-1]-1 eli sama kuin mittarit() ja _ketju() kayttavat; arvot ovat kulujen ja slippagen jalkeen
+    (salkku.suorita_paiva veloittaa ne). Taulu luodaan vasta tassa: tallennus pois paalta -> taulua ei ole."""
+    rek.executescript(PAIVATUOTTO_SKEEMA)
+    rek.executemany(
+        "INSERT OR REPLACE INTO paivatuotot (nimi,jakso,versio,alku,paiva,tuotto) VALUES (?,?,?,?,?,?)",
+        [(nimi, jakso, KOODIVERSIO, alku.isoformat(), p, arvot[i + 1] / arvot[i] - 1) for i, p in enumerate(paivat)])
+    rek.commit()
+
+
 def kokeiluja(rek, nimi=None):
     if nimi is None:
         return rek.execute("SELECT COUNT(*) FROM kokeilut").fetchone()[0]
@@ -183,7 +201,7 @@ class _Nakyma:
         return self._d.sulut(symbol, d_ms, n)
 
 
-def _aja(tehdas, data, alku, loppu, _lupa=None, kynnys_pp=None):
+def _aja(tehdas, data, alku, loppu, _lupa=None, kynnys_pp=None, paivat_ulos=None):
     """Sisainen ajo. Kieltaytyy lukitusta jaksosta ellei kutsuja ole holdout_arvioi. Palauttaa (arvot_alkupaoma_mukana, kauppoja)."""
     if loppu >= holdout_alku() and _lupa is not _HOLDOUT_LUPA:
         raise Holdoutvirhe("jakso ylittaa lukitun loppujakson (%s alkaen)" % holdout_alku())
@@ -195,19 +213,27 @@ def _aja(tehdas, data, alku, loppu, _lupa=None, kynnys_pp=None):
         ehd = strat(nak, p, sallitut)
         ehd = kyn.suodata(sal, data.con, p, ehd, set(sallitut), kynnys_pp)
         salkku.suorita_paiva(sal, data.con, p, ehd, set(sallitut))
-    arvot = [rajat.ALKUPAOMA] + [r[0] for r in sal.execute("SELECT arvo FROM arvot ORDER BY paiva")]
+    rivit = sal.execute("SELECT paiva, arvo FROM arvot ORDER BY paiva").fetchall()
+    arvot = [rajat.ALKUPAOMA] + [r[1] for r in rivit]
+    if paivat_ulos is not None:
+        paivat_ulos.extend(r[0] for r in rivit)
     kauppoja = sal.execute("SELECT COUNT(*) FROM kaupat").fetchone()[0]
     sal.close()
     return arvot, kauppoja
 
 
-def aja(tehdas, data, alku, loppu, rek=None, nimi="?", parametrit=None, jakso="kehitys", kynnys_pp=None):
+def aja(tehdas, data, alku, loppu, rek=None, nimi="?", parametrit=None, jakso="kehitys", kynnys_pp=None,
+        paivatuotot=False):
+    """paivatuotot=True (vaatii rek): tallenna paivatuotot kulujen jalkeen tauluun paivatuotot. Oletus: pois."""
     if loppu >= holdout_alku():
         raise Holdoutvirhe("jakso ylittaa lukitun loppujakson (%s alkaen); kayta holdout_arvioi()" % holdout_alku())
-    arvot, kauppoja = _aja(tehdas, data, alku, loppu, kynnys_pp=kynnys_pp)
+    paivat = [] if (paivatuotot and rek is not None) else None
+    arvot, kauppoja = _aja(tehdas, data, alku, loppu, kynnys_pp=kynnys_pp, paivat_ulos=paivat)
     m = mit.mittarit(arvot)
     if rek is not None:
         kirjaa(rek, nimi, parametrit or {}, jakso, alku, loppu, m, kauppoja)
+        if paivat is not None:
+            kirjaa_paivatuotot(rek, nimi, jakso, alku, paivat, arvot)
     return {"arvot": arvot, "mittarit": m, "kauppoja": kauppoja}
 
 
@@ -264,8 +290,10 @@ def ikkunat(alku, loppu, train_pv=365, testi_pv=90):
     return ulos
 
 
-def walk_forward(nimi, tehdas_fn, ruudukko, data, rek, alku=None, loppu=None, train_pv=365, testi_pv=90, edistyminen=None):
-    """tehdas_fn(**parametrit) -> tehdas. ruudukko: lista parametri-dictejä. Valinta vain train-jaksolla (Sharpe)."""
+def walk_forward(nimi, tehdas_fn, ruudukko, data, rek, alku=None, loppu=None, train_pv=365, testi_pv=90, edistyminen=None,
+                 paivatuotot=False):
+    """tehdas_fn(**parametrit) -> tehdas. ruudukko: lista parametri-dictejä. Valinta vain train-jaksolla (Sharpe).
+    paivatuotot=True: testijaksojen (wf-oos) paivatuotot kulujen jalkeen tauluun paivatuotot. Oletus pois: ei muutosta."""
     alku = alku or date(*rajat.BACKTEST_ALKU)
     loppu = loppu or (holdout_alku() - timedelta(days=1))
     if loppu >= holdout_alku():
@@ -279,7 +307,7 @@ def walk_forward(nimi, tehdas_fn, ruudukko, data, rek, alku=None, loppu=None, tr
             s = -1e9 if s is None else s
             if paras_s is None or s > paras_s:
                 paras, paras_s = par, s
-        r = aja(tehdas_fn(**paras), data, c, d, rek, nimi, paras, "wf-oos")
+        r = aja(tehdas_fn(**paras), data, c, d, rek, nimi, paras, "wf-oos", paivatuotot=paivatuotot)
         osat.append(r["arvot"])
         foldit.append({"train": (a, b), "testi": (c, d), "valittu": paras, "train_sharpe": paras_s,
                        "oos_tuotto": (r["mittarit"] or {}).get("tuotto"),
