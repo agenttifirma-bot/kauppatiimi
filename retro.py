@@ -24,7 +24,29 @@ PV_MS = 86400000
 
 
 def _ro(polku):
-    return sqlite3.connect("file:%s?mode=ro" % polku, uri=True, timeout=10)
+    """Avaa kannan vain luku -tilassa.
+
+    WAL-tilainen kanta ilman -shm-tiedostoa kaatuu vain luku -hakemistossa (ReadOnlyPaths),
+    koska lukija ei voi luoda -shm:aa. Jos mikaan ei kirjoita (ei -wal-tiedostoa tai se on tyhja),
+    kanta luetaan immutable=1:lla: tuore data on silloin jo paatiedostossa. Jos -wal:ssa on dataa,
+    immutable ei nakisi sita, joten virhe nostetaan eika lueta vanhentunutta tilaa.
+    """
+    con = sqlite3.connect("file:%s?mode=ro" % polku, uri=True, timeout=10)
+    try:
+        con.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        return con
+    except sqlite3.OperationalError:
+        con.close()
+        wal = polku + "-wal"
+        if os.path.exists(wal) and os.path.getsize(wal) > 0:
+            raise
+    con = sqlite3.connect("file:%s?mode=ro&immutable=1" % polku, uri=True, timeout=10)
+    try:
+        con.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error:
+        con.close()
+        raise
+    return con
 
 
 def lue_salkku(polku):
