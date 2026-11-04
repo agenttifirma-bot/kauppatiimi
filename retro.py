@@ -138,7 +138,7 @@ def _paivaosa(paivat):
 
 
 def _yhdista(viikkorivit, paivarivit):
-    """Viikko-osa + paivaosa, yhteensa enintaan HAVAINNOT_MAX merkkia. Paivaosa saa viedä enintaan puolet; vanhimmat paivat pois ensin.
+    """Viikko-osa + paivaosa, yhteensa enintaan HAVAINNOT_MAX merkkia. Paivaosa saa vieda enintaan puolet; vanhimmat paivat pois ensin.
     Viikko-osa katkaistaan viimeisena."""
     paivat = list(paivarivit)[-PAIVIA_MAX:]
     while paivat and len(_paivaosa(paivat)) > HAVAINNOT_MAX // 2:
@@ -152,7 +152,7 @@ def _yhdista(viikkorivit, paivarivit):
 
 
 def lue_paivarivit(polku):
-    """Paivatilan rivit (vanhin ensin) olemassa olevasta havainnot.md:sta; puuttuva tiedosto = ei rivejä."""
+    """Paivatilan rivit (vanhin ensin) olemassa olevasta havainnot.md:sta; puuttuva tiedosto = ei riveja."""
     try:
         with open(polku, encoding="utf-8") as f:
             teksti = f.read()
