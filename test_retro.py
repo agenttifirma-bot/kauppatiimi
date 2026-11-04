@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -319,6 +320,59 @@ class PaivatilaTesti(RetroTesti):
         self.salkku(self.a, 10)
         self.assertEqual(retro.main_paiva(self.tanaan(10) + timedelta(days=5), {"flash": self.a}, self.polku), 0)
         self.assertFalse(os.path.exists(self.polku))
+
+
+class VainLukuWalTesti(unittest.TestCase):
+    """ReadOnlyPaths-ajo: WAL-tilainen kanta ilman -shm/-wal-tiedostoja vain luku -hakemistossa."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.hak = os.path.join(self.d, "data")
+        os.mkdir(self.hak)
+        self.polku = os.path.join(self.hak, "s.db")
+        con = sqlite3.connect(self.polku)
+        con.execute("PRAGMA journal_mode=wal")
+        con.execute("CREATE TABLE t(x INTEGER)")
+        con.executemany("INSERT INTO t VALUES(?)", [(1,), (2,), (3,)])
+        con.commit()
+        con.close()  # viimeisen yhteyden sulkeminen siivoaa -wal ja -shm
+        os.chmod(self.polku, 0o444)
+        os.chmod(self.hak, 0o555)
+        self.addCleanup(self._siivoa)
+
+    def _siivoa(self):
+        os.chmod(self.hak, 0o755)
+        os.chmod(self.polku, 0o644)
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def test_ilman_wal_tiedostoja_luku_onnistuu(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ohittaa hakemiston kirjoitusoikeuden")
+        self.assertEqual(sorted(os.listdir(self.hak)), ["s.db"])
+        con = retro._ro(self.polku)
+        try:
+            self.assertEqual(con.execute("SELECT count(*) FROM t").fetchone()[0], 3)
+        finally:
+            con.close()
+
+    def test_wal_jossa_dataa_ei_lueta_immutablella(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ohittaa hakemiston kirjoitusoikeuden")
+        os.chmod(self.hak, 0o755)
+        # tuore rivi vain -wal:ssa: pidetaan kirjoittaja auki, jolloin immutable ei sita nakisi
+        w = sqlite3.connect(self.polku, timeout=10)
+        os.chmod(self.polku, 0o644)
+        w.close()
+        w = sqlite3.connect(self.polku, timeout=10)
+        w.execute("INSERT INTO t VALUES(4)")
+        w.commit()
+        self.assertTrue(os.path.getsize(self.polku + "-wal") > 0)
+        con = retro._ro(self.polku)   # -shm on olemassa, tavallinen vain luku -avaus nakee wal:n
+        try:
+            self.assertEqual(con.execute("SELECT count(*) FROM t").fetchone()[0], 4)
+        finally:
+            con.close()
+            w.close()
 
 
 if __name__ == "__main__":
