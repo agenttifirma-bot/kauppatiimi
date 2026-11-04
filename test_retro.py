@@ -215,5 +215,93 @@ class HavainnotTesti(RetroTesti):
         self.assertIn("## pro: ei viela dataa (0 pv < 28)", self.teksti())
 
 
+class PaivatilaTesti(RetroTesti):
+    """Illan paivatila: paivaosa havainnot.md:ssa, uusin paiva korvaa vanhimman, pituusraja pitaa."""
+
+    def setUp(self):
+        super().setUp()
+        self.polku = os.path.join(self.d.name, "havainnot.md")
+        # paivarivi() saa "tanaan" parametrina eika lue kelloa: kiintea alku ei ole aikapommi
+
+    def teksti(self):
+        with open(self.polku, encoding="utf-8") as f:
+            return f.read()
+
+    def lue(self, paivia):
+        return {n: retro.lue_salkku(p) for n, p in (("flash", self.a), ("pro", self.b))}
+
+    def tanaan(self, paivia):
+        return self.alku + timedelta(days=paivia - 1)
+
+    def test_tappio_ja_syy_datasta(self):
+        self.salkku(self.a, 10, kerroin=-0.01, kaupat=1)
+        self.salkku(self.b, 10, kerroin=0.01)
+        r = retro.paivarivi(self.tanaan(10), self.lue(10))
+        self.assertIn("flash -1.0", r)
+        self.assertIn("TAPPIO syy=", r)
+        self.assertNotIn("pro -", r)           # pro nousi: ei tappiota
+        self.assertLessEqual(len(r), retro.PAIVARIVI_MAX)
+
+    def test_kulut_syyksi_kun_ne_ovat_puolet_tappiosta(self):
+        self.salkku(self.a, 10, kerroin=-0.00001, kaupat=1)   # tappio ~0.1 USDT, kulut 1.5
+        r = retro.paivarivi(self.tanaan(10), self.lue(10))
+        self.assertIn("syy=kulut", r)
+
+    def test_vanha_salkku_ei_rivia(self):
+        self.salkku(self.a, 10)
+        self.assertIsNone(retro.paivarivi(self.tanaan(10) + timedelta(days=3), self.lue(10)))
+
+    def test_uusin_korvaa_vanhimman_ja_raja_pitaa(self):
+        for n in range(8, 8 + retro.PAIVIA_MAX + 3):
+            self.salkku(self.a, n, kerroin=-0.002)
+            self.salkku(self.b, n, kerroin=0.002)
+            retro.paivita_paivat(self.polku, retro.paivarivi(self.tanaan(n), self.lue(n)))
+            self.assertLessEqual(len(self.teksti()), retro.HAVAINNOT_MAX)
+        rivit = retro.lue_paivarivit(self.polku)
+        self.assertEqual(len(rivit), retro.PAIVIA_MAX)
+        viim = self.tanaan(8 + retro.PAIVIA_MAX + 2).isoformat()
+        self.assertTrue(rivit[-1].startswith("- " + viim))
+        self.assertNotIn(self.tanaan(8).isoformat(), self.teksti())      # vanhin pudonnut
+
+    def test_sama_paiva_ajettuna_kahdesti_ei_tuplaa(self):
+        self.salkku(self.a, 10)
+        r = retro.paivarivi(self.tanaan(10), self.lue(10))
+        retro.paivita_paivat(self.polku, r)
+        retro.paivita_paivat(self.polku, r)
+        self.assertEqual(len(retro.lue_paivarivit(self.polku)), 1)
+
+    def test_viikkoretro_sailyttaa_paivaosan_ja_rajan(self):
+        self.markkina(31)
+        for n in (27, 28, 29, 30):
+            self.salkku(self.a, n); self.salkku(self.b, n)
+            retro.paivita_paivat(self.polku, retro.paivarivi(self.tanaan(n), self.lue(n)))
+        retro.raportti(self.data, {"flash": self.a, "pro": self.b}, self.tanaan(30) + timedelta(days=1), None, self.polku)
+        t = self.teksti()
+        self.assertLessEqual(len(t), retro.HAVAINNOT_MAX)
+        self.assertIn(retro.PAIVAT_OTSIKKO, t)
+        self.assertIn("## flash (", t)                     # viikko-osa paivittyi
+        self.assertEqual(len(retro.lue_paivarivit(self.polku)), 4)
+
+    def test_paivatila_sailyttaa_viikko_osan(self):
+        self.markkina(31)
+        self.salkku(self.a, 30); self.salkku(self.b, 30)
+        retro.raportti(self.data, {"flash": self.a, "pro": self.b}, self.tanaan(30) + timedelta(days=1), None, self.polku)
+        retro.paivita_paivat(self.polku, retro.paivarivi(self.tanaan(30), self.lue(30)))
+        t = self.teksti()
+        self.assertIn("## flash (", t)
+        self.assertIn(retro.PAIVAT_OTSIKKO, t)
+
+    def test_main_paiva_ei_kutsu_llm_ei_telegramia(self):
+        self.salkku(self.a, 10)
+        with mock.patch.object(retro.llm, "lue_env", side_effect=AssertionError), mock.patch.object(retro.notify, "laheta", side_effect=AssertionError):
+            self.assertEqual(retro.main_paiva(self.tanaan(10), {"flash": self.a}, self.polku), 0)
+        self.assertIn("- " + self.tanaan(10).isoformat(), self.teksti())
+
+    def test_main_paiva_ilman_uutta_paivaa_ei_kirjoita(self):
+        self.salkku(self.a, 10)
+        self.assertEqual(retro.main_paiva(self.tanaan(10) + timedelta(days=5), {"flash": self.a}, self.polku), 0)
+        self.assertFalse(os.path.exists(self.polku))
+
+
 if __name__ == "__main__":
     unittest.main()
