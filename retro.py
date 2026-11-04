@@ -147,7 +147,8 @@ def _yhdista(viikkorivit, paivarivit):
     viikko = "\n".join(viikkorivit) + "\n"
     tila = HAVAINNOT_MAX - len(osa)
     if len(viikko) > tila:
-        viikko = viikko[:tila].rsplit("\n", 1)[0] + "\n(katkaistu)\n"
+        merkki = "\n(katkaistu)\n"
+        viikko = viikko[:max(0, tila - len(merkki))].rsplit("\n", 1)[0] + merkki   # merkki mahtuu rajaan
     return viikko + osa
 
 
@@ -199,7 +200,8 @@ def paivarivi(tanaan, salkut):
                 syy = "hylatty:" + re.sub(r"[^A-Za-z0-9_]", "", str(hyl))[:12]
             else:
                 syy = "markkina %+.1f" % (muutos + kulut)
-            krit = next((pa for pp, _e, pa, _k in s["kriitikko"] if pp == p), None)
+            krit = next((pa for pp, _e, pa, _k in s["kriitikko"] if pp == p and pa), None)
+            krit = re.sub(r"[^A-Za-z0-9_]", "", str(krit))[:12] if krit else ""   # sama siivous kuin hyl: teksti menee agenttien kehotteeseen
             osa += " TAPPIO syy=%s%s" % (syy, " krit=" + krit if krit else "")
         osat.append(osa)
     if not osat:
