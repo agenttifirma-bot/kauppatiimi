@@ -69,6 +69,22 @@ def lue_salkku(hakemisto, nimi):
     return alku, rivit
 
 
+def salkun_sarja(nimi, alku, arvot, jakso):
+    """Salkun arvosarja [lahto, ...] jaksolta; indeksi 0 = lahtotilanne.
+    Jos salkku on alkanut ennen jaksoa, lahto on jaksoa edeltavan paivan arvo
+    (muuten ensimmaisen paivan tuotto sisaltaisi jaksoa edeltaneen kehityksen).
+    Jos salkku alkaa jakson ensimmaisena paivana, lahto on alkupaoma."""
+    ensimmainen = min(arvot)
+    if ensimmainen < jakso[0]:
+        edellinen = jakso[0] - timedelta(days=1)
+        if edellinen not in arvot:
+            raise ValueError("%s: jaksoa edeltavan paivan arvorivi puuttuu" % nimi)
+        lahto = arvot[edellinen]
+    else:
+        lahto = alku
+    return [lahto] + [arvot[p] for p in jakso]
+
+
 def passiivi_bh(jakso, avaus, sulku):
     """Arvosarja [1, ...] jakson alusta; indeksi 0 = lahtotilanne."""
     q = 1.0 / (avaus[ms(jakso[0])] * (1 + KULU))
@@ -165,7 +181,7 @@ def laske(hakemisto, loppu=None, min_paivat=MIN_PAIVAT_VALI):
         arvot = {p: x for p, x in rivit}
         if any(p not in arvot for p in jakso):
             raise ValueError("%s: arvorivi puuttuu jaksolta" % nimi)
-        v = [alku] + [arvot[p] for p in jakso]
+        v = salkun_sarja(nimi, alku, arvot, jakso)
         r = paivatuotot(v)
         rivi = {"nimi": nimi, "tuotto": v[-1] / v[0] - 1, "pudotus": pudotus(v), "vertailut": []}
         for pn, pt, pd, pr in passiiviset:
@@ -225,7 +241,7 @@ def muotoile(t, tuoreus_teksti):
     return "\n".join(rivit)
 
 
-def main(argv):
+def jasenna(argv):
     hakemisto, loppu, min_paivat = OLETUS_HAKEMISTO, None, MIN_PAIVAT_VALI
     i = 0
     while i < len(argv):
@@ -239,9 +255,14 @@ def main(argv):
         else:
             hakemisto = a.rstrip("/")
             i += 1
+    return hakemisto, loppu, min_paivat
+
+
+def main(argv):
     try:
+        hakemisto, loppu, min_paivat = jasenna(argv)
         t = laske(hakemisto, loppu, min_paivat)
-    except (sqlite3.Error, ValueError, KeyError, OSError) as e:
+    except (sqlite3.Error, ValueError, KeyError, OSError, IndexError) as e:
         print("virhe: " + type(e).__name__)
         return 1
     teksti, _ = tuoreus(hakemisto)

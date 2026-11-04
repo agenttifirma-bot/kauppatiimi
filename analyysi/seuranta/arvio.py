@@ -70,7 +70,9 @@ def arvioi(hakemisto, toistoja=TOISTOJA, lohko=LOHKO, loppu=None):
     for nimi in s.SALKUT:
         alku, rr = data[nimi]
         arv = dict(rr)
-        v = [alku] + [arv[p] for p in jakso]
+        if any(p not in arv for p in jakso):
+            raise ValueError("%s: arvorivi puuttuu jaksolta" % nimi)
+        v = s.salkun_sarja(nimi, alku, arv, jakso)
         r = s.paivatuotot(v)
         tuotto = v[-1] / v[0] - 1
         for pn, pr, pt in pas:
@@ -95,7 +97,7 @@ def muotoile(t):
     return "\n".join(out)
 
 
-def main(argv):
+def jasenna(argv):
     h, toistoja, lohko, loppu, i = s.OLETUS_HAKEMISTO, TOISTOJA, LOHKO, None, 0
     while i < len(argv):
         if argv[i] == "--toistoja":
@@ -106,7 +108,12 @@ def main(argv):
             lohko = int(argv[i + 1]); i += 2
         else:
             h = argv[i].rstrip("/"); i += 1
+    return h, toistoja, lohko, loppu
+
+
+def main(argv):
     try:
+        h, toistoja, lohko, loppu = jasenna(argv)
         print(muotoile(arvioi(h, toistoja, lohko, loppu)))
     except (s.sqlite3.Error, ValueError, KeyError, OSError, IndexError) as e:
         print("virhe: " + type(e).__name__)

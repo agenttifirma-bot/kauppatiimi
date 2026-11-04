@@ -8,14 +8,17 @@ import unittest
 from contextlib import redirect_stdout
 from datetime import date, datetime, timedelta, timezone
 
+from analyysi.seuranta import arvio
 from analyysi.seuranta import seuranta as s
 
 ALKU = date(2026, 1, 1)
 
 
 def rakenna(hakemisto, paivia, hinta=lambda i: 100.0, salkku=lambda i: 10000.0,
-            btc_puuttuu=None, paivitetty="2026-03-01T08:00:00+00:00"):
-    """Tekoaineisto: BTC-hinta funktiona paivan indeksista, salkun arvo samoin."""
+            btc_puuttuu=None, paivitetty="2026-03-01T08:00:00+00:00", alku_siirto=None):
+    """Tekoaineisto: BTC-hinta funktiona paivan indeksista, salkun arvo samoin.
+    alku_siirto: {salkun nimi: paivia}, kuinka monta paivaa myohemmin salkku alkaa."""
+    alku_siirto = alku_siirto or {}
     m = sqlite3.connect(hakemisto + "/markkina.db")
     m.execute("create table hinnat (symbol text, ts integer, open real, high real, low real,"
               " close real, volume real, quote_volume real, kaupat integer)")
@@ -32,7 +35,7 @@ def rakenna(hakemisto, paivia, hinta=lambda i: 100.0, salkku=lambda i: 10000.0,
         c.execute("create table tila (avain text primary key, arvo text not null)")
         c.execute("insert into tila values ('alkupaoma','10000.0')")
         c.execute("create table arvot (paiva text primary key, arvo real, kateinen real, positiot_arvo real)")
-        for i in range(paivia):
+        for i in range(alku_siirto.get(nimi, 0), paivia):
             c.execute("insert into arvot values (?,?,0,0)",
                       ((ALKU + timedelta(days=i)).isoformat(), salkku(i)))
         c.commit()
@@ -133,6 +136,41 @@ class Kokonaisuus(unittest.TestCase):
             self.assertAlmostEqual(t["salkut"][0]["tuotto"], 90 / 10000)
             self.assertEqual(t["salkut"][0]["pudotus"], 0.0)
 
+    def test_eri_aloituspaivat_lahtoarvo_on_jakson_alkua_edeltava_paiva(self):
+        # flash alkaa paivasta 0, pro paivasta 10: jakso alkaa paivasta 10.
+        # Flashin arvo kasvaa +100/pv, joten jaksoa edeltanyt kehitys (10000 -> 10900)
+        # ei saa kuulua jakson tuottoon. Oikea lahtoarvo on paivan 9 arvo 10900.
+        with tempfile.TemporaryDirectory() as d:
+            rakenna(d, 40, salkku=lambda i: 10000 + 100 * i, alku_siirto={"salkku_pro": 10})
+            t = s.laske(d)
+            self.assertEqual(t["alku"], ALKU + timedelta(days=10))
+            flash, pro = t["salkut"]
+            self.assertEqual(flash["nimi"], "salkku_flash")
+            # jakson viimeinen paiva 39: arvo 13900, lahto 10900
+            self.assertAlmostEqual(flash["tuotto"], 13900 / 10900 - 1)
+            # pro alkaa jakson ensimmaisena paivana: lahtoarvo on alkupaoma 10000
+            self.assertAlmostEqual(pro["tuotto"], 13900 / 10000 - 1)
+
+    def test_eri_aloituspaivat_arvio_samat_lahtoarvot(self):
+        with tempfile.TemporaryDirectory() as d:
+            rakenna(d, 40, salkku=lambda i: 10000 + 100 * i, alku_siirto={"salkku_pro": 10})
+            r = arvio.arvioi(d, toistoja=1000)
+            # tasainen BTC: passiivisen tuotto on kulun verran miinuksella, sama kaikille
+            flash = [x for x in r["rivit"] if x["tapa"] == "salkku_flash"][0]
+            self.assertAlmostEqual(flash["ero_kum"] + 0.0, (13900 / 10900 - 1) - (1 / 1.002 - 1))
+            self.assertEqual(flash["paivia"], 30)
+
+    def test_aukko_ennen_jaksoa_antaa_virheen(self):
+        # flash alkaa paivasta 0 mutta paivan 9 rivi puuttuu: lahtoarvoa ei voi paatella
+        with tempfile.TemporaryDirectory() as d:
+            rakenna(d, 40, alku_siirto={"salkku_pro": 10})
+            c = sqlite3.connect(d + "/salkku_flash.db")
+            c.execute("delete from arvot where paiva=?", ((ALKU + timedelta(days=9)).isoformat(),))
+            c.commit()
+            c.close()
+            with self.assertRaises(ValueError):
+                s.laske(d)
+
     def test_btc_hinta_puuttuu_antaa_virheen(self):
         with tempfile.TemporaryDirectory() as d:
             rakenna(d, 20, btc_puuttuu=5)
@@ -165,6 +203,16 @@ class Kokonaisuus(unittest.TestCase):
             with redirect_stdout(out):
                 self.assertEqual(s.main([d]), 1)
             self.assertRegex(out.getvalue().strip(), r"^virhe: \w+$")
+
+
+class Argumentit(unittest.TestCase):
+    def test_virheellinen_argumentti_antaa_virheen_eika_tracebackia(self):
+        for modyyli in (s, arvio):
+            for argv in (["/tmp", "--loppu"], ["/tmp", "--loppu", "xx"]):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    self.assertEqual(modyyli.main(argv), 1)
+                self.assertRegex(out.getvalue().strip(), r"^virhe: \w+$")
 
 
 class Tuoreus(unittest.TestCase):
