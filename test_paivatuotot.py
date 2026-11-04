@@ -10,10 +10,10 @@ AJO = dict(alku=date(2025, 1, 1), loppu=date(2026, 4, 10), train_pv=200, testi_p
 RUUDUKKO = [{"ikkuna": 30, "k": 3, "reb": 7}, {"ikkuna": 60, "k": 5, "reb": 14}]
 
 
-def aja_wf(paivatuotot):
+def aja_wf(paivatuotot, rek=None, **yli):
     d = bt.Data(kanta(600), 8)
-    rek = bt.avaa_rekisteri(":memory:")
-    wf = bt.walk_forward("mom", lambda **p: bt.momentum(**p), RUUDUKKO, d, rek, paivatuotot=paivatuotot, **AJO)
+    rek = rek or bt.avaa_rekisteri(":memory:")
+    wf = bt.walk_forward("mom", lambda **p: bt.momentum(**p), RUUDUKKO, d, rek, paivatuotot=paivatuotot, **{**AJO, **yli})
     return wf, rek
 
 
@@ -51,6 +51,37 @@ class PaivatuototTesti(unittest.TestCase):
     def test_vain_testijaksot_tallennetaan(self):
         _, rek = aja_wf(True)
         self.assertEqual(rek.execute("SELECT COUNT(*) FROM paivatuotot WHERE jakso!='wf-oos'").fetchone()[0], 0)
+
+    def test_uudelleenajo_eri_ikkunoilla_ei_tee_sekasarjaa(self):
+        """Tarkastajan loydos: sama nimi, paallekkaiset ikkunat -> vanhan ajon paivat eivat saa kadota tai vaihtaa alkua."""
+        _, rek = aja_wf(True)
+        aja_wf(True, rek=rek, alku=date(2025, 2, 1))   # siirretyt ikkunat: paivat osuvat paallekkain ensimmaisen ajon kanssa
+        kokeilut = rek.execute("SELECT alku, loppu, tuotto FROM kokeilut WHERE nimi='mom' AND jakso='wf-oos'").fetchall()
+        self.assertGreaterEqual(len(kokeilut), 4)
+        for alku, loppu, tuotto in kokeilut:
+            rivit = [r for (r,) in rek.execute(
+                "SELECT tuotto FROM paivatuotot WHERE nimi='mom' AND jakso='wf-oos' AND alku=? ORDER BY paiva", (alku,))]
+            tulo = 1.0
+            for r in rivit:
+                tulo *= 1 + r
+            self.assertAlmostEqual(tulo - 1, tuotto, delta=TOLERANSSI, msg="sarja %s on rikki" % alku)
+        # sama ikkuna ajettuna uudelleen korvaa itsensa eika kasvata taulua
+        n = rek.execute("SELECT COUNT(*) FROM paivatuotot").fetchone()[0]
+        aja_wf(True, rek=rek, alku=date(2025, 2, 1))
+        self.assertEqual(rek.execute("SELECT COUNT(*) FROM paivatuotot").fetchone()[0], n)
+
+    def test_holdout_raja_ei_riipu_kellosta(self):
+        self.assertEqual(bt.holdout_alku(), date(*bt.rajat.HOLDOUT_ALKU))
+        class Kello(bt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2035, 1, 1, tzinfo=tz)
+        vanha, bt.datetime = bt.datetime, Kello
+        try:
+            wf, _ = aja_wf(True)
+        finally:
+            bt.datetime = vanha
+        self.assertIsNotNone(wf["mittarit"])
 
 
 if __name__ == "__main__":

@@ -157,10 +157,12 @@ def kirjaa(rek, nimi, parametrit, jakso, alku, loppu, m, kauppoja):
 PAIVATUOTTO_SKEEMA = """
 CREATE TABLE IF NOT EXISTS paivatuotot (
   nimi TEXT NOT NULL, jakso TEXT NOT NULL, versio TEXT NOT NULL, alku TEXT NOT NULL, paiva TEXT NOT NULL,
-  tuotto REAL NOT NULL, PRIMARY KEY (nimi, jakso, versio, paiva));
+  tuotto REAL NOT NULL, PRIMARY KEY (nimi, jakso, versio, alku, paiva));
 """
 
 
+# Paaavaimessa on alku: eri ikkunoilla ajetun saman nimen rivit eivat ylikirjoita toisiaan (sekasarja). INSERT OR REPLACE
+# korvaa vain saman ikkunan uudelleenajon. Lukija valitsee sarjan alku-arvolla (vastaa kokeilut.alku-saraketta).
 def kirjaa_paivatuotot(rek, nimi, jakso, alku, paivat, arvot):
     """Valinnainen paivatuottojen tallennus (paperiajon mittaus). paivat[i] on arvot[i+1]:n paiva; arvot[0] on alkupaoma.
     Tuotto = arvot[i]/arvot[i-1]-1 eli sama kuin mittarit() ja _ketju() kayttavat; arvot ovat kulujen ja slippagen jalkeen
