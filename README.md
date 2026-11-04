@@ -29,6 +29,12 @@ This is a learning and portfolio project. **Nothing here is financial advice and
 `python3 ab_tilasto.py` compares the flash and pro portfolios (read-only): daily-return difference, Sharpe, max drawdown,
 paired block-bootstrap CI and the number of days needed for significance. Tests: `test_ab_tilasto.py` (synthetic data).
 
+## Passive paper portfolio and comparison
+
+`passiivinen_kk.py` runs the paper portfolio `passiivinen_kk` (BTC, 12 equal monthly buys of start capital / 12, never sells, real fees and slippage,
+Telegram alert at -30 % from peak; alert only, nothing is changed). `passiivinen_vertailu.py` compares BTC, S&P 500 (price index, via `indeksidata.py`) and
+80/20 and 50/50 mixes from 12 different start months, read-only; the holdout stays locked. Tests: `test_passiivinen_kk.py`.
+
 ## Tests
 
 ```
