@@ -117,6 +117,12 @@ class TestAvaintarkistus(Pohja):
         self.assertIn("HTTP 500", str(cm.exception))
         self.assertNotIn(AVAIN, str(cm.exception)); self.assertNotIn(SALAISUUS, str(cm.exception))
 
+    def test_vaara_salaisuus_hylataan_feikissa(self):
+        a = porssi.Asiakas(AVAIN, "vaara", hae=FeikkiBinance())
+        with self.assertRaises(porssi.PorssiVirhe) as cm:
+            a.avaimen_rajoitukset()
+        self.assertEqual(cm.exception.tila, 401)
+
     def test_kuljetuksen_poikkeus_ei_vuoda(self):
         def kaatuu(metodi, url, *_):
             raise RuntimeError(url)   # url sisaltaa allekirjoituksen
