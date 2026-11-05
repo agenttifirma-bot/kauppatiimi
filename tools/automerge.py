@@ -57,7 +57,7 @@ RAJATUT = [
 ]
 # Repokohtaiset lisarajaukset. kauppatiimi: oikean rahan lukot (sama kuin agentti/pr_kutsu.REPON_SUOJATUT).
 REPON_RAJATUT = {
-    "kauppatiimi": [(re.compile(r"(^|/)(riskivahti\.py|salkku\.py|kirjanpito\.py|asetukset\.py|rajat\.py|config\.py)\Z|\.(service|timer|db|sqlite3?)\Z|^data/"),
+    "kauppatiimi": [(re.compile(r"(^|/)(riskivahti\.py|salkku\.py|kirjanpito\.py|asetukset\.py|rajat\.py|config\.py|k7\.py)\Z|\.(service|timer|db|sqlite3?)(\.malli)?\Z|^data/|key"),
                      "oikea raha")],
 }
 # Lisatyilla riveilla ei saa olla infran osoitteita (julkiset repot).
