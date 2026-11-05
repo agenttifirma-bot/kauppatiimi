@@ -119,28 +119,49 @@ def kasittele_telegram(viesti, sallittu_chat_id, asiakas=None, polku=None, nyt=N
     return pysayta("telegram", asiakas, polku, nyt)
 
 
+def _ei_toimeksiantoja():
+    """Hatapysaytyksen asiakas vain peruu. Jos se joskus yrittaisi uutta toimeksiantoa, se kielletaan aina."""
+    raise Pysaytetty("hatapysaytyksen asiakas ei laheta toimeksiantoja")
+
+
+# Paluukoodit: 0 = pysaytys onnistui kokonaan. Nollasta poikkeava aina, kun jokin osa jai tekematta.
+OK, PERUUTUS_KESKEN, AVAIN_HYLATTY, TIEDOSTO_EPAONNISTUI = 0, 1, 2, 3
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Hatapysaytys: pysaytystiedosto ja (avaimella) avointen peruutus.")
     ap.add_argument("--syy", default="kasin")
     ap.add_argument("--polku", default=None)
     ap.add_argument("--avain", default=None, help="avaintiedosto; jos annettu, peruu myos avoimet toimeksiannot")
     a = ap.parse_args(argv)
-    asiakas = None
+    asiakas, avainvirhe = None, None
     if a.avain:
         import avaintarkistus   # myohaisesti: avaintarkistus tuo taman moduulin
         import porssi
         try:
             k, s = avaintarkistus.lue_avain(a.avain)
-            asiakas = porssi.Asiakas(k, s)
+            asiakas = porssi.Asiakas(k, s, pysaytys_tarkistus=_ei_toimeksiantoja)
             del k, s
         except avaintarkistus.Kieltaytyy as e:
-            print("VAROITUS: avainta ei voitu kayttaa, avoimia ei peruttu:", e)
-    r = pysayta(a.syy, asiakas, a.polku)
+            avainvirhe = str(e)   # Kieltaytyy-viesti ei koskaan sisalla avaimen arvoa
+        except Exception as e:
+            avainvirhe = type(e).__name__
+    # Tiedosto kirjoitetaan aina, vaikka avain hylattaisiin: uudet kaupat estyvat silti.
+    try:
+        r = pysayta(a.syy, asiakas, a.polku)
+    except Exception as e:
+        print("VIRHE: pysaytystiedostoa ei voitu kirjoittaa (%s). Pysaytys EI ole paalla." % type(e).__name__)
+        return TIEDOSTO_EPAONNISTUI
     print("PYSAYTETTY: %s (jatko: Tony poistaa tiedoston kasin)" % r["tiedosto"])
+    if avainvirhe is not None:
+        print("VIRHE: avainta ei voitu kayttaa, avoimia toimeksiantoja EI peruttu: %s" % avainvirhe)
+        return AVAIN_HYLATTY
     if asiakas is not None:
         print("peruttu: %s, jaljella: %s, virheet: %s" % (",".join(r["peruttu"]) or "-", r["jaljella"],
                                                          "; ".join(r["virheet"]) or "-"))
-    return 1 if r["virheet"] or (asiakas is not None and r["jaljella"] != 0) else 0
+        if r["virheet"] or r["jaljella"] != 0:
+            return PERUUTUS_KESKEN
+    return OK
 
 
 if __name__ == "__main__":

@@ -249,6 +249,72 @@ class TestHatapysaytys(Pohja):
             sisalto = f.read()
         self.assertNotIn(";", sisalto); self.assertNotIn("/", sisalto)
 
+    def aja_cli(self, *argumentit, feikki=None):
+        """Ajaa CLI:n niin, etta porssi.Asiakas kayttaa feikki-Binancea (ei verkkoa)."""
+        alkup = porssi.Asiakas
+        tehdas = lambda k, s, **kw: alkup(k, s, hae=feikki or FeikkiBinance(), **kw)
+        ulos = io.StringIO()
+        with mock.patch.object(porssi, "Asiakas", side_effect=tehdas), redirect_stdout(ulos):
+            rc = hatapysaytys.main(["--polku", self.pysaytys] + list(argumentit))
+        return rc, ulos.getvalue()
+
+    def test_cli_hylatty_avain_palauttaa_virhekoodin(self):
+        os.chmod(self.avain, 0o644)   # avaintarkistus hylkaa (Kieltaytyy)
+        rc, ulos = self.aja_cli("--avain", self.avain)
+        self.assertEqual(rc, hatapysaytys.AVAIN_HYLATTY)
+        self.assertNotEqual(rc, 0)
+        self.assertTrue(hatapysaytys.pysaytetty(self.pysaytys))   # tiedosto kirjoitetaan silti
+        self.assertIn("EI peruttu", ulos)
+
+    def test_cli_puuttuva_avaintiedosto_palauttaa_virhekoodin(self):
+        rc, ulos = self.aja_cli("--avain", os.path.join(self.td, "ei-ole.key"))
+        self.assertEqual(rc, hatapysaytys.AVAIN_HYLATTY)
+        self.assertTrue(hatapysaytys.pysaytetty(self.pysaytys))
+
+    def test_cli_odottamaton_virhe_avaimessa_ei_vuoda(self):
+        with mock.patch("avaintarkistus.lue_avain", side_effect=RuntimeError(SALAISUUS)):
+            rc, ulos = self.aja_cli("--avain", self.avain)
+        self.assertEqual(rc, hatapysaytys.AVAIN_HYLATTY)
+        self.assertIn("RuntimeError", ulos)
+        self.assertNotIn(SALAISUUS, ulos)
+
+    def test_cli_onnistunut_peruutus_nolla(self):
+        feikki = FeikkiBinance()
+        a = self.kaynnista(feikki)
+        a.uusi_toimeksianto("BTCUSDT", "BUY", "LIMIT", quantity="0.001", price="1", timeInForce="GTC")
+        rc, ulos = self.aja_cli("--avain", self.avain, feikki=feikki)
+        self.assertEqual(rc, hatapysaytys.OK)
+        self.assertEqual(feikki.avoimet, [])
+        self.assertNotIn(AVAIN, ulos); self.assertNotIn(SALAISUUS, ulos)
+
+    def test_cli_peruutusvirhe_palauttaa_virhekoodin(self):
+        feikki = FeikkiBinance(peru_virhe=True)
+        a = self.kaynnista(feikki)
+        a.uusi_toimeksianto("BTCUSDT", "BUY", "LIMIT", quantity="0.001", price="1", timeInForce="GTC")
+        rc, _ = self.aja_cli("--avain", self.avain, feikki=feikki)
+        self.assertEqual(rc, hatapysaytys.PERUUTUS_KESKEN)
+
+    def test_cli_tiedoston_kirjoitus_epaonnistuu(self):
+        este = os.path.join(self.td, "tiedosto")
+        open(este, "w").close()   # hakemiston paikalla on tiedosto -> makedirs epaonnistuu
+        ulos = io.StringIO()
+        with redirect_stdout(ulos):
+            rc = hatapysaytys.main(["--polku", os.path.join(este, "PYSAYTYS")])
+        self.assertEqual(rc, hatapysaytys.TIEDOSTO_EPAONNISTUI)
+        self.assertIn("EI ole paalla", ulos.getvalue())
+
+    def test_cli_asiakas_ei_voi_lahettaa_toimeksiantoa(self):
+        luodut = []
+        alkup = porssi.Asiakas
+        def tehdas(k, s, **kw):
+            luodut.append(alkup(k, s, hae=FeikkiBinance(), **kw))
+            return luodut[-1]
+        with mock.patch.object(porssi, "Asiakas", side_effect=tehdas), redirect_stdout(io.StringIO()):
+            hatapysaytys.main(["--polku", self.pysaytys, "--avain", self.avain])
+        os.remove(self.pysaytys)   # vaikka tiedosto poistettaisiin, hatapysaytyksen asiakas ei laheta
+        with self.assertRaises(hatapysaytys.Pysaytetty):
+            luodut[0].uusi_toimeksianto("BTCUSDT", "BUY", "MARKET", quantity="0.001")
+
 
 def kauppa(i, symbol="BTCUSDT", ostaja=True, qty="0.01", price="60000", komissio="0.6", komissio_val="USDT",
            aika=1767225600000):
@@ -327,6 +393,21 @@ class TestVerokirjanpito(Pohja):
         self.assertAlmostEqual(tulo, 551.448, places=6)
         self.assertAlmostEqual(meno, 460.46, places=6)
         self.assertAlmostEqual(voitto, 90.988, places=6)
+
+    def test_fifo_pieni_kauppa_ei_sentin_pyoristysta(self):
+        vk = verokirjanpito.Verokirja(self.polku())
+        vk.kirjaa_binance([kauppa(1, qty="0.00001", price="60000", komissio="0")], eur_hinta)
+        # arvo 0.6 USDT * 0.92 = 0.552 EUR; arvo_eur-sarakkeessa 0.55, mutta hinta lasketaan pyoristamattomasta
+        hinta_eur = vk.fifo_syote()[0][4]
+        self.assertAlmostEqual(hinta_eur, 55200.0, places=6)
+
+    def test_oletuspolku_luetaan_kutsuhetkella(self):
+        p = os.path.join(self.td, "muu", "vero.csv")
+        with mock.patch.dict(os.environ, {"KAUPPA_VEROKIRJA": p}):
+            self.assertEqual(verokirjanpito.Verokirja().polku, p)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("KAUPPA_VEROKIRJA", None)
+            self.assertEqual(verokirjanpito.oletuspolku(), verokirjanpito.OLETUSPOLKU)
 
 
 if __name__ == "__main__":

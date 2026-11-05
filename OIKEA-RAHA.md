@@ -69,6 +69,15 @@ python3 -m hatapysaytys --syy kasin --avain /srv/kauppa/salaiset/binance.key  # 
 rm /srv/kauppa/data/PYSAYTYS                                                # jatko (Tonyn päätös)
 ```
 
+Paluukoodi kertoo, onnistuiko pysäytys kokonaan. Nollasta poikkeava koodi tarkoittaa, että jokin jäi tekemättä:
+
+- `0`: pysäytystiedosto on kirjoitettu, ja jos avain annettiin, kaikki avoimet toimeksiannot on peruttu.
+- `1`: tiedosto on kirjoitettu, mutta peruutus jäi kesken (virhe tai avoimia jäi). Tarkista pörssistä käsin.
+- `2`: tiedosto on kirjoitettu, mutta avainta ei voitu käyttää. Avoimia toimeksiantoja ei peruttu.
+- `3`: pysäytystiedostoa ei voitu kirjoittaa. Pysäytys ei ole päällä.
+
+Hätäpysäytyksen pörssiasiakas ei voi lähettää uusia toimeksiantoja: sen tarkistin kieltää ne aina.
+
 Telegram: komento `seis kauppa` toimii vain, kun viestin chat-id ja lähettäjän id ovat Tonyn chat-id. Muut viestit ohitetaan. Kytkentäpiste on `hatapysaytys.kasittele_telegram(viesti, sallittu_chat_id, asiakas)`. Se kytketään Telegram-lukijaan (tehtävä 2026-11-04-12), kun lukija on valmis. Siihen asti pysäytys tehdään tiedostolla.
 
 ## 3. Verokirjanpito

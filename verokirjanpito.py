@@ -19,7 +19,12 @@ import re
 import stat
 from decimal import Decimal, InvalidOperation
 
-OLETUSPOLKU = os.environ.get("KAUPPA_VEROKIRJA", "/srv/kauppa/yksityinen/verokirjanpito.csv")
+OLETUSPOLKU = "/srv/kauppa/yksityinen/verokirjanpito.csv"
+
+
+def oletuspolku():
+    """Ymparistomuuttuja KAUPPA_VEROKIRJA luetaan kutsuhetkella, ei moduulin latausvaiheessa."""
+    return os.environ.get("KAUPPA_VEROKIRJA") or OLETUSPOLKU
 SARAKKEET = [
     "aika_utc", "porssi", "pari", "puoli", "maara", "hinta", "hinta_valuutta", "arvo",
     "kulu", "kulu_valuutta", "eur_kurssi", "arvo_eur", "kulu_eur", "kauppa_id", "toimeksianto_id",
@@ -110,7 +115,7 @@ def rivi_binance_kaupasta(kauppa, eur_hinta, porssi="binance"):
 
 class Verokirja:
     def __init__(self, polku=None):
-        self.polku = polku or OLETUSPOLKU
+        self.polku = polku or oletuspolku()
         if _git_tyopuussa(self.polku):
             raise Kirjausvirhe("verokirjanpito ei saa olla git-tyopuun sisalla")
 
@@ -163,7 +168,11 @@ class Verokirja:
         with open(self.polku, newline="") as f:
             for r in csv.DictReader(f):
                 maara = Decimal(r["maara"])
-                hinta_eur = Decimal(r["arvo_eur"]) / maara
+                if maara <= 0:
+                    raise Kirjausvirhe("maara nolla rivilla %s" % r["kauppa_id"])
+                # Pyoristamaton arvo (arvo * kurssi), ei senttiin pyoristetty arvo_eur: pienissa kaupoissa
+                # sentin pyoristys jaettuna maaralla vaaristaisi yksikkohintaa.
+                hinta_eur = Decimal(r["arvo"]) * Decimal(r["eur_kurssi"]) / maara
                 ulos.append((r["aika_utc"][:10], jaa_pari(r["pari"])[0], r["puoli"], float(maara), float(hinta_eur),
                              float(Decimal(r["kulu_eur"]))))
         return ulos
