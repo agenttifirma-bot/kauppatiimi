@@ -26,6 +26,7 @@ KULU = 0.002
 SIEMEN, TOISTOJA, LOHKO = 1, 5000, 4
 MIN_PAIVAT_VALI = 30
 TAVOITE_PAIVAT = 90
+VALI_B = 30  # tapa B: osto 30 paivan valein jakson alusta
 SALKUT = ("salkku_flash", "salkku_pro")
 
 
@@ -99,6 +100,25 @@ def ostopaivat(jakso):
     return set(nahty.values())
 
 
+def ostopaivat_vali(jakso, vali=VALI_B):
+    """Tapa B: jakson ensimmainen paiva ja siita joka vali:s paiva (indeksit 0, vali, 2*vali, ...)."""
+    return {p for i, p in enumerate(jakso) if i % vali == 0}
+
+
+def passiivi_vali(jakso, avaus, sulku, vali=VALI_B):
+    """Kuukausiosto B, 30 paivan valein: paaoma jaetaan tasan jakson ostopaiville,
+    sama kulu kuin tavalla A (KULU per osto), ostamaton osa on kateista."""
+    ost = ostopaivat_vali(jakso, vali)
+    era = 1.0 / len(ost)
+    kassa, q, v = 1.0, 0.0, [1.0]
+    for p in jakso:
+        if p in ost:
+            q += era / (avaus[ms(p)] * (1 + KULU))
+            kassa -= era
+        v.append(kassa + q * sulku[ms(p)])
+    return v
+
+
 def passiivi_era(jakso, avaus, sulku):
     """Kuukausiosto, paaoman jako erin. Arvo sisaltaa kateisen."""
     ost = ostopaivat(jakso)
@@ -169,10 +189,12 @@ def laske(hakemisto, loppu=None, min_paivat=MIN_PAIVAT_VALI):
     bh = passiivi_bh(jakso, avaus, sulku)
     era = passiivi_era(jakso, avaus, sulku)
     sv, talletettu, str_ = passiivi_saasto(jakso, avaus, sulku)
+    vv = passiivi_vali(jakso, avaus, sulku)
     passiiviset = [
         ("BTC osta ja pida", bh[-1] - 1, pudotus(bh), paivatuotot(bh)),
         ("Kuukausiosto, p\u00e4\u00e4oman jako erin", era[-1] - 1, pudotus(era), paivatuotot(era)),
         ("Kuukausiosto, jatkuva s\u00e4\u00e4st\u00f6", sv[-1] / talletettu - 1, pudotus(sv), str_),
+        ("Kuukausiosto B, %d pv v\u00e4lein" % VALI_B, vv[-1] - 1, pudotus(vv), paivatuotot(vv)),
     ]
     rng = random.Random(SIEMEN)
     salkut = []

@@ -98,6 +98,51 @@ class Passiiviset(unittest.TestCase):
         self.assertLess(s.pudotus(era), s.pudotus(bh))
 
 
+class TapaB(unittest.TestCase):
+    """Tapa B: osto 30 paivan valein jakson alusta, kulu kuten tavalla A."""
+
+    def setUp(self):
+        # 65 paivaa: hinta 100 (i<30), 200 (30..59), 400 (i>=60)
+        hinta = lambda i: 100.0 if i < 30 else (200.0 if i < 60 else 400.0)
+        self.jakso = list(s.paivat(ALKU, ALKU + timedelta(days=64)))
+        self.avaus = {s.ms(p): hinta(i) for i, p in enumerate(self.jakso)}
+        self.sulku = dict(self.avaus)
+
+    def test_ostopaivat_30_paivan_valein(self):
+        self.assertEqual(sorted(s.ostopaivat_vali(self.jakso)),
+                         [ALKU, ALKU + timedelta(days=30), ALKU + timedelta(days=60)])
+
+    def test_lopputulos_kasin_laskettuna(self):
+        # 3 ostoa, kukin 1/3 paaomasta, kulu 0,2 % per osto, ei kateista lopussa:
+        # arvo = (1/3) * 400 * (1/100 + 1/200 + 1/400) / 1,002 = 7 / (3 * 1,002)
+        v = s.passiivi_vali(self.jakso, self.avaus, self.sulku)
+        self.assertAlmostEqual(v[-1], 7 / 3.006, places=9)
+        self.assertAlmostEqual(v[-1] - 1, 1.3286759813, places=9)
+        # ensimmaisen paivan jalkeen: 1/3 sijoitettu kurssiin 100, loput kateista
+        self.assertAlmostEqual(v[1], 2 / 3 + (1 / 3) / 1.002, places=9)
+
+    def test_lyhyt_jakso_yksi_osto_on_osta_ja_pida(self):
+        jakso = self.jakso[:19]
+        self.assertEqual(len(s.ostopaivat_vali(jakso)), 1)
+        self.assertEqual(s.passiivi_vali(jakso, self.avaus, self.sulku),
+                         s.passiivi_bh(jakso, self.avaus, self.sulku))
+
+    def test_vali_vaikuttaa(self):
+        # sama sarja, vali 20: ostot 0, 20, 40, 60 -> eri lopputulos kuin 30
+        v20 = s.passiivi_vali(self.jakso, self.avaus, self.sulku, vali=20)
+        self.assertNotAlmostEqual(v20[-1], 7 / 3.006, places=6)
+
+    def test_mukana_laskennassa(self):
+        with tempfile.TemporaryDirectory() as d:
+            rakenna(d, 65, hinta=lambda i: 100.0 if i < 30 else (200.0 if i < 60 else 400.0))
+            t = s.laske(d)
+            nimet = [v["nimi"] for v in t["salkut"][0]["vertailut"]]
+            self.assertEqual(len(nimet), 4)
+            self.assertIn("Kuukausiosto B, 30 pv v\u00e4lein", nimet)
+            b = [v for v in t["salkut"][0]["vertailut"] if v["nimi"].startswith("Kuukausiosto B")][0]
+            self.assertAlmostEqual(b["tuotto"], 7 / 3.006 - 1, places=9)
+
+
 class Kokonaisuus(unittest.TestCase):
     def test_lyhyt_jakso_ei_valia(self):
         with tempfile.TemporaryDirectory() as d:
