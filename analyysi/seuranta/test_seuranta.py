@@ -15,7 +15,8 @@ ALKU = date(2026, 1, 1)
 
 
 def rakenna(hakemisto, paivia, hinta=lambda i: 100.0, salkku=lambda i: 10000.0,
-            btc_puuttuu=None, paivitetty="2026-03-01T08:00:00+00:00", alku_siirto=None):
+            btc_puuttuu=None, paivitetty="2026-03-01T08:00:00+00:00", alku_siirto=None,
+            osuus=None, ilman_sarakkeita=False):
     """Tekoaineisto: BTC-hinta funktiona paivan indeksista, salkun arvo samoin.
     alku_siirto: {salkun nimi: paivia}, kuinka monta paivaa myohemmin salkku alkaa."""
     alku_siirto = alku_siirto or {}
@@ -34,10 +35,18 @@ def rakenna(hakemisto, paivia, hinta=lambda i: 100.0, salkku=lambda i: 10000.0,
         c = sqlite3.connect("%s/%s.db" % (hakemisto, nimi))
         c.execute("create table tila (avain text primary key, arvo text not null)")
         c.execute("insert into tila values ('alkupaoma','10000.0')")
-        c.execute("create table arvot (paiva text primary key, arvo real, kateinen real, positiot_arvo real)")
+        if ilman_sarakkeita:
+            c.execute("create table arvot (paiva text primary key, arvo real)")
+        else:
+            c.execute("create table arvot (paiva text primary key, arvo real, kateinen real, positiot_arvo real)")
         for i in range(alku_siirto.get(nimi, 0), paivia):
-            c.execute("insert into arvot values (?,?,0,0)",
-                      ((ALKU + timedelta(days=i)).isoformat(), salkku(i)))
+            pv = (ALKU + timedelta(days=i)).isoformat()
+            if ilman_sarakkeita:
+                c.execute("insert into arvot values (?,?)", (pv, salkku(i)))
+            else:
+                w = osuus(i) if osuus else 0.0  # sijoitusaste paivana i
+                c.execute("insert into arvot values (?,?,?,?)",
+                          (pv, salkku(i), salkku(i) * (1 - w), salkku(i) * w))
         c.commit()
         c.close()
     with open(hakemisto + "/PAIVITETTY", "w") as f:
@@ -137,7 +146,7 @@ class TapaB(unittest.TestCase):
             rakenna(d, 65, hinta=lambda i: 100.0 if i < 30 else (200.0 if i < 60 else 400.0))
             t = s.laske(d)
             nimet = [v["nimi"] for v in t["salkut"][0]["vertailut"]]
-            self.assertEqual(len(nimet), 4)
+            self.assertEqual(len(nimet), 5)  # 4 passiivista + BTC samalla sijoitusasteella
             self.assertIn("Kuukausiosto B, 30 pv v\u00e4lein", nimet)
             b = [v for v in t["salkut"][0]["vertailut"] if v["nimi"].startswith("Kuukausiosto B")][0]
             self.assertAlmostEqual(b["tuotto"], 7 / 3.006 - 1, places=9)
@@ -248,6 +257,77 @@ class Kokonaisuus(unittest.TestCase):
             with redirect_stdout(out):
                 self.assertEqual(s.main([d]), 1)
             self.assertRegex(out.getvalue().strip(), r"^virhe: \w+$")
+
+
+class Sijoitusaste(unittest.TestCase):
+    """Kateisosuus ja BTC samalla keskimaaraisella sijoitusasteella."""
+
+    def rivi(self, t, nimi="salkku_flash"):
+        return [x for x in t["salkut"] if x["nimi"] == nimi][0]
+
+    def test_kasin_laskettu_pieni_sarja(self):
+        # 3 paivaa, sijoitusaste 0,2 / 0,4 / 0,6 -> w = 0,4; viimeisen paivan kateinen 0,4
+        # BTC 100, 110, 121; avaus = sulku. Ostokulu 0,2 %.
+        # arvo = 0,6 + 0,4 * 121 / (100 * 1,002) = 0,6 + 0,48303393...
+        with tempfile.TemporaryDirectory() as d:
+            rakenna(d, 3, hinta=lambda i: [100.0, 110.0, 121.0][i],
+                    osuus=lambda i: [0.2, 0.4, 0.6][i])
+            t = s.laske(d)
+            r = self.rivi(t)
+            self.assertAlmostEqual(r["w"], 0.4)
+            self.assertAlmostEqual(r["kateinen"], 0.4)
+            ww = [v for v in r["vertailut"] if v["nimi"].startswith("BTC, sijoitusaste")][0]
+            self.assertEqual(ww["nimi"], "BTC, sijoitusaste 40.0 %")
+            self.assertAlmostEqual(ww["tuotto"], 0.6 + 0.4 * 121 / 100.2 - 1, places=12)
+
+    def test_w_nolla_on_pelkka_kateinen(self):
+        with tempfile.TemporaryDirectory() as d:
+            rakenna(d, 5, hinta=lambda i: 100.0 * (1 + i), osuus=lambda i: 0.0)
+            r = self.rivi(s.laske(d))
+            self.assertEqual(r["w"], 0.0)
+            self.assertEqual(r["kateinen"], 1.0)
+            ww = [v for v in r["vertailut"] if v["nimi"].startswith("BTC, sijoitusaste")][0]
+            self.assertAlmostEqual(ww["tuotto"], 0.0)
+            self.assertAlmostEqual(ww["pudotus"], 0.0)
+
+    def test_w_yksi_on_osta_ja_pida(self):
+        with tempfile.TemporaryDirectory() as d:
+            rakenna(d, 5, hinta=lambda i: 100.0 + 10 * i, osuus=lambda i: 1.0)
+            r = self.rivi(s.laske(d))
+            self.assertEqual(r["w"], 1.0)
+            self.assertAlmostEqual(r["kateinen"], 0.0)
+            bh = [v for v in r["vertailut"] if v["nimi"] == "BTC osta ja pida"][0]
+            ww = [v for v in r["vertailut"] if v["nimi"].startswith("BTC, sijoitusaste")][0]
+            self.assertAlmostEqual(ww["tuotto"], bh["tuotto"], places=12)
+
+    def test_sarake_puuttuu_antaa_kysymysmerkin_eika_kaada(self):
+        with tempfile.TemporaryDirectory() as d:
+            rakenna(d, 20, ilman_sarakkeita=True)
+            t = s.laske(d)
+            r = self.rivi(t)
+            self.assertIsNone(r["w"])
+            self.assertIsNone(r["kateinen"])
+            self.assertFalse([v for v in r["vertailut"] if v["nimi"].startswith("BTC, sijoitusaste")])
+            teksti = s.muotoile(t, "x")
+            self.assertIn("k\u00e4teisosuus viimeisen\u00e4 p\u00e4iv\u00e4n\u00e4: ?", teksti)
+            self.assertIn("sijoitusaste w: ?", teksti)
+
+    def test_tuloste_kertoo_jalkikateen_ja_lyhyen_datan(self):
+        with tempfile.TemporaryDirectory() as d:
+            rakenna(d, 10, osuus=lambda i: 0.5)
+            teksti = s.muotoile(s.laske(d), "x")
+            self.assertIn("tiedet\u00e4\u00e4n vasta j\u00e4lkik\u00e4teen", teksti)
+            self.assertIn("eik\u00e4 ole toteutettavissa oleva tapa", teksti)
+            self.assertIn("Vertailusta ei voi p\u00e4\u00e4tell\u00e4 mit\u00e4\u00e4n", teksti)
+            for v in self.rivi(s.laske(d))["vertailut"]:
+                self.assertIsNone(v["vali"])
+
+    def test_w_lasketaan_vain_jakson_paivilta(self):
+        # pro alkaa paivasta 10; jakso 10..19. flashin sijoitusaste muuttuu paivasta 10: ennen 1,0, sen jalkeen 0,5
+        with tempfile.TemporaryDirectory() as d:
+            rakenna(d, 20, osuus=lambda i: 1.0 if i < 10 else 0.5, alku_siirto={"salkku_pro": 10})
+            r = self.rivi(s.laske(d))
+            self.assertAlmostEqual(r["w"], 0.5)
 
 
 class Argumentit(unittest.TestCase):
