@@ -345,6 +345,40 @@ class HylkaysKoodiTesti(unittest.TestCase):
                          sorted(["nimi_puuttuu", "arvo_ei_sallittu", "ruudukko_tyhja", "ruudukko_suuri", "tuntematon_param", "muu"]))
         self.assertNotIn("momentum", k)
 
+    def test_jokainen_tarkista_spec_viesti_osuu_omaan_koodiinsa(self):
+        """Ajaa tarkista_spec:n oikeilla virheilla: jokaisen oikean viestin pitaa saada oma koodinsa (ei 'muu', ei vaaraa koodia)."""
+        kiint = {"signaali": "momentum", "suunta": "korkea", "ikkuna": 30, "k": 5, "reb": 7, "osuus": 0.5, "suodin": "ei", "suodin_toiminto": "kateinen"}
+
+        def sp(poista=(), **muut):
+            kk = {a: b for a, b in kiint.items() if a not in poista}
+            o = {"nimi": "a", "hypoteesi": "x" * 25, "kiinteat": kk, "ruudukko": {}}
+            o.update(muut)
+            return o
+        tapaukset = [
+            ("ei_olio", 5),
+            ("nimi_puuttuu", sp(nimi="")),
+            ("hyp_lyhyt", sp(hypoteesi="lyhyt")),
+            ("kentat_ei_olioita", sp(ruudukko=[1])),
+            ("tuntematon_param", sp(ruudukko={"foo": [1, 2]})),
+            ("ruudukointi_kielletty", sp(ruudukko={"signaali": ["momentum", "volatiliteetti"]}, poista=("signaali",))),
+            ("param_kahdesti", sp(ruudukko={"k": [5, 6]})),
+            ("param_puuttuu", sp(poista=("k",))),
+            ("arvo_ei_sallittu", sp(ruudukko={"ikkuna": [7, 999]}, poista=("ikkuna",))),
+            ("ruudukko_tyhja", sp(ruudukko={"k": []}, poista=("k",))),
+            ("ruudukko_suuri", sp(ruudukko={"ikkuna": [7, 14, 30], "reb": [3, 7, 14]}, poista=("ikkuna", "reb"))),
+        ]
+        for odotettu, o in tapaukset:
+            with self.subTest(odotettu):
+                with self.assertRaises(k7.Speksivirhe) as c:
+                    k7.tarkista_spec(o)
+                self.assertEqual(k7.hylkaykset_koodeina([str(c.exception)]), odotettu + ":1")
+        # kiinteiden arvon virhe (ei ruudukossa) tunnistetaan samoin
+        o = sp()
+        o["kiinteat"]["k"] = 99
+        with self.assertRaises(k7.Speksivirhe) as c:
+            k7.tarkista_spec(o)
+        self.assertEqual(k7.hylkaykset_koodeina([str(c.exception)]), "arvo_ei_sallittu:1")
+
     def test_tyhja(self):
         self.assertEqual(k7.hylkaykset_koodeina([]), "")
         self.assertEqual(k7.ajon_tulos([], []), "ei_tietoa")

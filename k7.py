@@ -116,8 +116,8 @@ def tarkista_spec(o):
 
 
 HYLKAYSKOODIT = (   # (viestin osa, lyhyt koodi); jarjestys on tarkea (tarkimmat ensin)
-    ("ruudukko liian suuri", "ruudukko_suuri"), ("ruudukko ", "ruudukko_tyhja"), ("spec ei ole olio", "ei_olio"),
-    ("nimi puuttuu", "nimi_puuttuu"), ("hypoteesi puuttuu", "hyp_lyhyt"), ("eivat ole olioita", "kentat_ei_olioita"),
+    ("ruudukko liian suuri", "ruudukko_suuri"), ("eivat ole olioita", "kentat_ei_olioita"), ("ruudukko ", "ruudukko_tyhja"),
+    ("spec ei ole olio", "ei_olio"), ("nimi puuttuu", "nimi_puuttuu"), ("hypoteesi puuttuu", "hyp_lyhyt"),
     ("tuntematon parametri", "tuntematon_param"), ("ei saa ruudukoida", "ruudukointi_kielletty"),
     ("sekä kiinteissa", "param_kahdesti"), ("puuttuvat parametrit", "param_puuttuu"), ("ei sallittu", "arvo_ei_sallittu"),
 )
