@@ -35,6 +35,13 @@ paired block-bootstrap CI and the number of days needed for significance. Tests:
 Telegram alert at -30 % from peak; alert only, nothing is changed). `passiivinen_vertailu.py` compares BTC, S&P 500 (price index, via `indeksidata.py`) and
 80/20 and 50/50 mixes from 12 different start months, read-only; the holdout stays locked. Tests: `test_passiivinen_kk.py`.
 
+## Daily portfolio report
+
+`python3 salkkuraportti.py --salkku-db <salkku.db> [--viikko] [--ei-tg]` prints (and sends to Telegram) a read-only report of
+at most 6 lines: value and change (EUR and %), trades and costs, max drawdown so far, the same starting capital as a passive
+monthly purchase (`mittarit.passiiviset`), and one sentence on what the agent did. `--viikko` adds the weekly summary
+(who is ahead, worst day, how often the daily trade limit was hit). Tests: `test_salkkuraportti.py`.
+
 ## Tests
 
 ```
