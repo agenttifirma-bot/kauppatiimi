@@ -216,7 +216,7 @@ class HavainnotTesti(RetroTesti):
         self.assertIn("## pro: ei viela dataa (0 pv < 28)", self.teksti())
 
 
-class VainLukuWalTesti(unittest.TestCase):
+class VainLukuPohja(unittest.TestCase):
     """ReadOnlyPaths-ajo: WAL-tilainen kanta ilman -shm/-wal-tiedostoja vain luku -hakemistossa."""
 
     def setUp(self):
@@ -239,6 +239,8 @@ class VainLukuWalTesti(unittest.TestCase):
         os.chmod(self.polku, 0o644)
         shutil.rmtree(self.d, ignore_errors=True)
 
+
+class VainLukuWalTesti(VainLukuPohja):
     def test_ilman_wal_tiedostoja_luku_onnistuu(self):
         if os.geteuid() == 0:
             self.skipTest("root ohittaa hakemiston kirjoitusoikeuden")
@@ -246,6 +248,8 @@ class VainLukuWalTesti(unittest.TestCase):
         con = retro._ro(self.polku)
         try:
             self.assertEqual(con.execute("SELECT count(*) FROM t").fetchone()[0], 3)
+            # varatie palauttaa muistikopion: tiedostopolku on tyhja eika tavallinen avaus ole tuottanut tulosta
+            self.assertEqual(con.execute("PRAGMA database_list").fetchone()[2], "")
         finally:
             con.close()
 
@@ -340,14 +344,229 @@ class VainLukuWalTesti(unittest.TestCase):
             with self.assertRaises(retro.VanhentunutLukuVirhe):
                 retro._ro(self.polku)
 
-    def test_varatie_palauttaa_muistikopion_jolla_kaikki_rivit(self):
+
+class SeurantaYhteys(sqlite3.Connection):
+    """Kirjaa, mitka yhteydet suljettiin; backup voidaan pakottaa epaonnistumaan."""
+    kaikki = []
+    backup_virhe = False
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.suljettu = False
+        SeurantaYhteys.kaikki.append(self)
+
+    def close(self):
+        self.suljettu = True
+        super().close()
+
+    def backup(self, *a, **kw):
+        if SeurantaYhteys.backup_virhe:
+            raise sqlite3.OperationalError("backup epaonnistui")
+        return super().backup(*a, **kw)
+
+
+def seuranta(testi):
+    """Patchaa sqlite3.connect kayttamaan SeurantaYhteys-luokkaa; palauttaa yhteyslistan."""
+    SeurantaYhteys.kaikki = []
+    SeurantaYhteys.backup_virhe = False
+    alku = sqlite3.connect
+    testi.addCleanup(setattr, SeurantaYhteys, "backup_virhe", False)
+
+    def yhdista(*a, **kw):
+        kw.setdefault("factory", SeurantaYhteys)
+        return alku(*a, **kw)
+    p = mock.patch.object(sqlite3, "connect", yhdista)
+    p.start()
+    testi.addCleanup(p.stop)
+    return SeurantaYhteys.kaikki
+
+
+class VaratieEhdotTesti(VainLukuPohja):
+    """PR #39:n toinen hylkays: varatie vain WAL-kannalle, ei kuumalle journalille, yhteydet suljetaan, Python 3.10."""
+
+    def _kuuma_journal(self):
+        """Rollback-tilan kanta + kuuma -journal vain luku -hakemistossa (SQLITE_READONLY_ROLLBACK, 776)."""
+        lahde = os.path.join(self.d, "rb_lahde")
+        os.mkdir(lahde)
+        lp = os.path.join(lahde, "r.db")
+        c = sqlite3.connect(lp, isolation_level=None)
+        self.addCleanup(c.close)
+        c.execute("CREATE TABLE t(x INTEGER)")
+        c.execute("BEGIN")
+        c.executemany("INSERT INTO t VALUES(?)", [(i,) for i in range(2000)])
+        c.execute("COMMIT")
+        c.execute("PRAGMA synchronous=OFF")
+        c.execute("BEGIN")
+        c.execute("UPDATE t SET x=x+1")   # journal syntyy, kirjoittaja jaa kesken
+        self.assertGreater(os.path.getsize(lp + "-journal"), 0)
+        hak = os.path.join(self.d, "rb_hak")
+        os.mkdir(hak)
+        shutil.copy(lp, os.path.join(hak, "r.db"))
+        shutil.copy(lp + "-journal", os.path.join(hak, "r.db-journal"))
+        os.chmod(hak, 0o555)
+        self.addCleanup(os.chmod, hak, 0o755)
+        return os.path.join(hak, "r.db")
+
+    def test_kuuma_journal_ro_hakemistossa_ei_immutablea(self):
         if os.geteuid() == 0:
             self.skipTest("root ohittaa hakemiston kirjoitusoikeuden")
-        con = retro._ro(self.polku)
+        polku = self._kuuma_journal()
+        with mock.patch.object(retro, "_kopioi_muistiin") as kopio:
+            with self.assertRaises(sqlite3.OperationalError):
+                retro._ro(polku)
+        kopio.assert_not_called()
+
+    def test_rollback_tila_ei_wal_otsikkoa_hylkaa_varatien(self):
+        """Vaikka virhekoodi olisi sallittu (1544), rollback-tilainen kanta (tavut 18-19 = 1) ei kayta varatieta."""
+        polku = os.path.join(self.d, "rb.db")
+        c = sqlite3.connect(polku)
+        c.execute("CREATE TABLE t(x INTEGER)")
+        c.commit()
+        c.close()
+        self.assertEqual(retro._wal_tila(polku), False)
+        virhe = sqlite3.OperationalError("attempt to write a readonly database")
+        virhe.sqlite_errorcode = 1544
+        alku = sqlite3.connect
+        kutsut = []
+
+        def yhdista(*a, **kw):
+            kutsut.append(a[0])
+            if len(kutsut) == 1:
+                raise virhe
+            return alku(*a, **kw)
+        with mock.patch.object(sqlite3, "connect", yhdista), mock.patch.object(retro, "_kopioi_muistiin") as kopio:
+            with self.assertRaises(sqlite3.OperationalError):
+                retro._ro(polku)
+        kopio.assert_not_called()
+
+    def test_journal_ilmestyy_kopioinnin_aikana_nostaa_virheen(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ohittaa hakemiston kirjoitusoikeuden")
+        alkuperainen = retro._kopioi_muistiin
+
+        def kopioi_ja_journal(polku):
+            kopio = alkuperainen(polku)
+            os.chmod(self.hak, 0o755)
+            with open(polku + "-journal", "wb") as f:
+                f.write(b"x")
+            os.chmod(self.hak, 0o555)
+            return kopio
+        with mock.patch.object(retro, "_kopioi_muistiin", kopioi_ja_journal):
+            with self.assertRaises(retro.VanhentunutLukuVirhe):
+                retro._ro(self.polku)
+
+    def test_journal_olemassa_hylkaa_varatien_wal_kannallakin(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ohittaa hakemiston kirjoitusoikeuden")
+        os.chmod(self.hak, 0o755)
+        with open(self.polku + "-journal", "wb") as f:
+            f.write(b"x")
+        os.chmod(self.hak, 0o555)
+        # tosiasiallinen avaus hylkaa jo itse (kuuma journal); tama testaa vartijan, kun koodi on sallittu (1544)
+        virhe = sqlite3.OperationalError("attempt to write a readonly database")
+        virhe.sqlite_errorcode = 1544
+        alku = sqlite3.connect
+        kutsut = []
+
+        def yhdista(*a, **kw):
+            kutsut.append(1)
+            if len(kutsut) == 1:
+                raise virhe
+            return alku(*a, **kw)
+        with mock.patch.object(sqlite3, "connect", yhdista), mock.patch.object(retro, "_kopioi_muistiin") as kopio:
+            with self.assertRaises(retro.VanhentunutLukuVirhe):
+                retro._ro(self.polku)
+        kopio.assert_not_called()
+
+    def test_wal_tila_otsikon_tavuista(self):
+        self.assertTrue(retro._wal_tila(self.polku))
+        roska = os.path.join(self.d, "roska.db")
+        with open(roska, "wb") as f:
+            f.write(b"x" * 10)
+        self.assertFalse(retro._wal_tila(roska))
+
+    def test_sallitut_virhekoodit(self):
+        def virhe(koodi, viesti="x"):
+            e = sqlite3.OperationalError(viesti)
+            if koodi is not None:
+                e.sqlite_errorcode = koodi
+            return e
+        for koodi in (8, 14, 1544):
+            self.assertTrue(retro._shm_virhe(virhe(koodi)), koodi)
+        for koodi in (5, 6, 776, 264, 1288, 3338):    # 776 = kuuma journal; 5/6 = lukitus
+            self.assertFalse(retro._shm_virhe(virhe(koodi)), koodi)
+
+    def test_python310_ilman_sqlite_errorcode(self):
+        """Python 3.10:ssa sqlite_errorcode puuttuu: viestiin perustuva paatelma, WAL-otsikko varmistaa loput."""
+        def virhe(viesti):
+            e = sqlite3.OperationalError(viesti)
+            if hasattr(e, "sqlite_errorcode"):
+                del e.sqlite_errorcode
+            return e
+        self.assertTrue(retro._shm_virhe(virhe("attempt to write a readonly database")))
+        self.assertTrue(retro._shm_virhe(virhe("unable to open database file")))
+        self.assertFalse(retro._shm_virhe(virhe("database is locked")))
+        # kokonaisuus: ensimmainen avaus epaonnistuu ilman koodia, WAL-kanta ilman -shm:aa luetaan muistikopiona
+        alku = sqlite3.connect
+        kutsut = []
+
+        def yhdista(*a, **kw):
+            kutsut.append(1)
+            if len(kutsut) == 1:
+                raise virhe("attempt to write a readonly database")
+            return alku(*a, **kw)
+        with mock.patch.object(sqlite3, "connect", yhdista):
+            con = retro._ro(self.polku)
         try:
             self.assertEqual(con.execute("SELECT count(*) FROM t").fetchone()[0], 3)
         finally:
             con.close()
+
+    def test_python310_kuuma_journal_ei_johda_varatielle(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ohittaa hakemiston kirjoitusoikeuden")
+        polku = self._kuuma_journal()
+        e = sqlite3.OperationalError("attempt to write a readonly database")
+        alku = sqlite3.connect
+        kutsut = []
+
+        def yhdista(*a, **kw):
+            kutsut.append(1)
+            if len(kutsut) == 1:
+                raise e
+            return alku(*a, **kw)
+        with mock.patch.object(sqlite3, "connect", yhdista), mock.patch.object(retro, "_kopioi_muistiin") as kopio:
+            with self.assertRaises(sqlite3.OperationalError):
+                retro._ro(polku)
+        kopio.assert_not_called()
+
+    def test_databaseerror_sulkee_yhteyden(self):
+        roska = os.path.join(self.d, "ei_kanta.db")
+        with open(roska, "wb") as f:
+            f.write(b"tama ei ole sqlite-tiedosto " * 20)
+        yhteydet = seuranta(self)
+        with self.assertRaises(sqlite3.DatabaseError):
+            retro._ro(roska)
+        self.assertTrue(yhteydet)
+        self.assertTrue(all(c.suljettu for c in yhteydet))
+
+    def test_epaonnistunut_backup_sulkee_kohteen(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ohittaa hakemiston kirjoitusoikeuden")
+        yhteydet = seuranta(self)
+        SeurantaYhteys.backup_virhe = True
+        with self.assertRaises(sqlite3.OperationalError):
+            retro._ro(self.polku)
+        self.assertGreaterEqual(len(yhteydet), 3)    # ro-avaus, lahde, kohde
+        self.assertTrue(all(c.suljettu for c in yhteydet))
+
+    def test_virhe_nousee_ro_kutsussa_ja_raportti_kestaa_sen(self):
+        """Kutsujat: lue_salkku/raportti ottavat sqlite3.Error-virheet kiinni, joten avauksessa nouseva virhe ei kaada viikkoretroa."""
+        roska = os.path.join(self.d, "roska_salkku.db")
+        with open(roska, "wb") as f:
+            f.write(b"tama ei ole sqlite-tiedosto " * 20)
+        t = retro.raportti(roska, {"flash": roska}, date(2026, 11, 1))
+        self.assertIn("flash: kantaa ei voi lukea (DatabaseError)", t)
 
 
 if __name__ == "__main__":

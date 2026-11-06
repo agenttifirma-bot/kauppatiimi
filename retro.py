@@ -23,20 +23,39 @@ HAVAINNOT_POLKU = os.environ.get("KAUPPA_HAVAINNOT", "/srv/kauppa/havainnot/hava
 PV_MS = 86400000
 
 
-# -shm:n luonti vain luku -hakemistossa epaonnistuu koodilla SQLITE_READONLY (8; -wal puuttuu, laajennettu 1544)
-# tai SQLITE_CANTOPEN (14; -wal on olemassa). Lukitus (SQLITE_BUSY 5) ei kuulu naihin.
-SHM_VIRHEKOODIT = (8, 14)
+# -shm:n luonti vain luku -hakemistossa epaonnistuu koodilla SQLITE_READONLY (8) tai sen laajennetulla koodilla
+# SQLITE_READONLY_DIRECTORY (1544; -wal puuttuu), tai SQLITE_CANTOPEN (14; -wal on olemassa). Sallitaan vain nama.
+# Nimenomaan EI sallita esim. SQLITE_READONLY_ROLLBACK (776, kuuma -journal) eika lukitusta (SQLITE_BUSY 5).
+SHM_VIRHEKOODIT = (8, 14, 1544)
+# Python 3.10:ssa sqlite_errorcode puuttuu: paatellaan viestista. Se on vain karkea suodatin; turvallisuuden ratkaisevat
+# WAL-otsikko, -journal-tarkistus ja sormenjalki, jotka ajetaan aina.
+SHM_VIRHEVIESTIT = ("attempt to write a readonly database", "unable to open database file")
 
 
 class VanhentunutLukuVirhe(sqlite3.OperationalError):
-    """Kanta muuttui tai sen -wal sai dataa immutable-luvun aikana: tulos voisi olla vanhentunut."""
+    """Kanta muuttui tai sen -wal/-journal sai dataa immutable-luvun aikana: tulos voisi olla vanhentunut."""
+
+
+def _shm_virhe(e):
+    """Onko virhe sellainen, etta syyna voi olla puuttuva -shm vain luku -hakemistossa."""
+    koodi = getattr(e, "sqlite_errorcode", None)
+    if koodi is not None:
+        return koodi in SHM_VIRHEKOODIT
+    return str(e) in SHM_VIRHEVIESTIT
+
+
+def _wal_tila(polku):
+    """True, jos tiedoston otsikon tavut 18-19 (kirjoitus- ja lukuversio) ovat molemmat 2 eli kanta on WAL-tilassa."""
+    with open(polku, "rb") as f:
+        otsikko = f.read(20)
+    return len(otsikko) == 20 and otsikko[18] == 2 and otsikko[19] == 2
 
 
 def _sormenjalki(polku):
-    """(paatiedoston koko ja muutosaika, -wal:n koko tai None): muuttuu, jos joku kirjoittaa."""
+    """(paatiedoston koko ja muutosaika, -wal:n koko tai None, -journal:n koko tai None): muuttuu, jos joku kirjoittaa."""
     st = os.stat(polku)
-    wal = polku + "-wal"
-    return (st.st_size, st.st_mtime_ns, os.path.getsize(wal) if os.path.exists(wal) else None)
+    return (st.st_size, st.st_mtime_ns) + tuple(os.path.getsize(polku + p) if os.path.exists(polku + p) else None
+                                                for p in ("-wal", "-journal"))
 
 
 def _kopioi_muistiin(polku):
@@ -44,39 +63,58 @@ def _kopioi_muistiin(polku):
     src = sqlite3.connect("file:%s?mode=ro&immutable=1" % polku, uri=True, timeout=10)
     try:
         kohde = sqlite3.connect(":memory:")
-        src.backup(kohde)
+        try:
+            src.backup(kohde)
+        except BaseException:
+            kohde.close()
+            raise
         return kohde
     finally:
         src.close()
 
 
 def _ro(polku):
-    """Avaa kannan vain luku -tilassa.
+    """Avaa kannan vain luku -tilassa. Virheet nousevat jo tassa (koetinkysely), eivat vasta ensimmaisessa kyselyssa.
 
     WAL-tilainen kanta ilman -shm-tiedostoa ei aukea vain luku -hakemistossa (ReadOnlyPaths), koska
-    lukija ei voi luoda -shm:aa; virhekoodi on SQLITE_READONLY (8) tai SQLITE_CANTOPEN (14). Vain nama
-    ohjaavat varatielle. Muut virheet, kuten `database is locked`, nostetaan: lukitus tarkoittaa, etta joku
-    kirjoittaa, eika silloin saa lukea immutable-tilassa.
-    Varatie: jos -wal puuttuu tai on tyhja, kanta kopioidaan muistiin immutable=1-tilassa ja
-    -wal:n koko seka paatiedoston koko ja muutosaika tarkistetaan ennen ja jalkeen kopioinnin.
-    Jos jokin muuttui (kirjoittaja ehti mukaan), nostetaan VanhentunutLukuVirhe. Jos -wal:ssa on dataa,
-    virhe nostetaan heti. Rajaus: tarkistus perustuu tiedostojen tilaan, joten se on vahva mutta ei
-    absoluuttinen takuu (sekunnin murto-osan sisalla alkava ja loppuva kirjoitus ilman nakyvaa jalkea).
+    lukija ei voi luoda -shm:aa. Varatielle paasee vain, jos kaikki ehdot tayttyvat:
+    1. virhekoodi on SHM_VIRHEKOODIT-listalla (3.10: viesti; ks. SHM_VIRHEVIESTIT),
+    2. kanta on WAL-tilassa (otsikon tavut 18-19),
+    3. -journal-tiedostoa ei ole (immutable ohittaisi kuuman journalin) ja -wal puuttuu tai on tyhja.
+    Muuten alkuperainen virhe nostetaan (lukitus tarkoittaa kirjoittajaa) tai nostetaan VanhentunutLukuVirhe.
+    Varatie kopioi kannan muistiin immutable=1-tilassa; paatiedoston koko ja muutosaika seka -wal:n ja -journal:n
+    koko tarkistetaan ennen ja jalkeen. Jos jokin muuttui, nostetaan VanhentunutLukuVirhe. Rajaus: tarkistus perustuu
+    tiedostojen tilaan, joten se on vahva mutta ei absoluuttinen takuu (sekunnin murto-osan sisalla alkava ja
+    loppuva kirjoitus ilman nakyvaa jalkea). Kaikki yhteydet suljetaan kaikilla virhepoluilla.
     """
-    con = sqlite3.connect("file:%s?mode=ro" % polku, uri=True, timeout=10)
+    con = None
     try:
+        con = sqlite3.connect("file:%s?mode=ro" % polku, uri=True, timeout=10)
         con.execute("SELECT count(*) FROM sqlite_master").fetchone()
         return con
-    except sqlite3.OperationalError as e:
-        con.close()
-        koodi = getattr(e, "sqlite_errorcode", None)
-        if koodi is None or (koodi & 0xFF) not in SHM_VIRHEKOODIT or not os.path.exists(polku):
-            raise
-    ennen = _sormenjalki(polku)
+    except BaseException as e:
+        if con is not None:
+            con.close()
+        virhe = e
+    if not (isinstance(virhe, sqlite3.OperationalError) and _shm_virhe(virhe) and os.path.exists(polku)):
+        raise virhe
+    try:
+        if not _wal_tila(polku):
+            raise virhe
+        ennen = _sormenjalki(polku)
+    except OSError:
+        raise virhe
+    if ennen[3] is not None:
+        raise VanhentunutLukuVirhe("-journal on olemassa: immutable-luku ohittaisi sen")
     if ennen[2]:
         raise VanhentunutLukuVirhe("-wal sisaltaa dataa eika -shm:aa voi luoda")
     kopio = _kopioi_muistiin(polku)
-    if _sormenjalki(polku) != ennen:
+    try:
+        muuttui = _sormenjalki(polku) != ennen
+    except BaseException:
+        kopio.close()
+        raise
+    if muuttui:
         kopio.close()
         raise VanhentunutLukuVirhe("kanta muuttui immutable-luvun aikana")
     return kopio
