@@ -269,5 +269,86 @@ class VainLukuWalTesti(unittest.TestCase):
             w.close()
 
 
+    def test_lukitusvirhe_ei_johda_immutable_lukuun(self):
+        """Kirjoittaja pitaa lukkoa (rollback-tila): 'database is locked' nostetaan, vanhaa tilaa ei lueta."""
+        hak = os.path.join(self.d, "lukko")
+        os.mkdir(hak)
+        polku = os.path.join(hak, "l.db")
+        c = sqlite3.connect(polku)
+        c.execute("CREATE TABLE t(x INTEGER)")
+        c.execute("INSERT INTO t VALUES(1)")
+        c.commit()
+        c.close()
+        w = sqlite3.connect(polku, isolation_level=None)
+        self.addCleanup(w.close)
+        w.execute("BEGIN EXCLUSIVE")
+        w.execute("INSERT INTO t VALUES(2)")
+        with mock.patch.object(sqlite3, "connect", wraps=sqlite3.connect) as m:
+            with self.assertRaises(sqlite3.OperationalError) as ctx:
+                retro._ro(polku)
+        self.assertIn("locked", str(ctx.exception))
+        self.assertFalse(any("immutable" in str(k.args[0]) for k in m.call_args_list))
+
+    def _wal_dataa_ilman_shm(self):
+        """Palauttaa vain luku -hakemiston, jossa on kanta ja -wal (sisaltaa rivin 4), mutta ei -shm:aa."""
+        lahde = os.path.join(self.d, "lahde")
+        os.mkdir(lahde)
+        lp = os.path.join(lahde, "w.db")
+        w = sqlite3.connect(lp)
+        w.execute("PRAGMA journal_mode=wal")
+        w.execute("PRAGMA wal_autocheckpoint=0")
+        w.execute("CREATE TABLE t(x INTEGER)")
+        w.execute("INSERT INTO t VALUES(1)")
+        w.commit()
+        w.execute("INSERT INTO t VALUES(4)")
+        w.commit()
+        self.addCleanup(w.close)
+        hak = os.path.join(self.d, "walhak")
+        os.mkdir(hak)
+        shutil.copy(lp, os.path.join(hak, "w.db"))
+        shutil.copy(lp + "-wal", os.path.join(hak, "w.db-wal"))
+        self.assertGreater(os.path.getsize(os.path.join(hak, "w.db-wal")), 0)
+        os.chmod(os.path.join(hak, "w.db"), 0o444)
+        os.chmod(os.path.join(hak, "w.db-wal"), 0o444)
+        os.chmod(hak, 0o555)
+        self.addCleanup(os.chmod, hak, 0o755)
+        return os.path.join(hak, "w.db")
+
+    def test_wal_dataa_ilman_shm_nostaa_virheen(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ohittaa hakemiston kirjoitusoikeuden")
+        polku = self._wal_dataa_ilman_shm()
+        self.assertFalse(os.path.exists(polku + "-shm"))
+        with self.assertRaises(retro.VanhentunutLukuVirhe):
+            retro._ro(polku)
+
+    def test_kirjoittaja_kopioinnin_aikana_nostaa_virheen(self):
+        """Kilpatilanne: -wal ilmestyy tarkistuksen jalkeen, kesken immutable-kopioinnin."""
+        if os.geteuid() == 0:
+            self.skipTest("root ohittaa hakemiston kirjoitusoikeuden")
+        alkuperainen = retro._kopioi_muistiin
+
+        def kopioi_ja_kirjoita(polku):
+            kopio = alkuperainen(polku)
+            os.chmod(self.hak, 0o755)
+            with open(polku + "-wal", "wb") as f:   # kirjoittaja aloittaa kopioinnin jalkeen
+                f.write(b"x" * 32)
+            os.chmod(self.hak, 0o555)
+            return kopio
+
+        with mock.patch.object(retro, "_kopioi_muistiin", kopioi_ja_kirjoita):
+            with self.assertRaises(retro.VanhentunutLukuVirhe):
+                retro._ro(self.polku)
+
+    def test_varatie_palauttaa_muistikopion_jolla_kaikki_rivit(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ohittaa hakemiston kirjoitusoikeuden")
+        con = retro._ro(self.polku)
+        try:
+            self.assertEqual(con.execute("SELECT count(*) FROM t").fetchone()[0], 3)
+        finally:
+            con.close()
+
+
 if __name__ == "__main__":
     unittest.main()

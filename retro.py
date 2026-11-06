@@ -23,30 +23,63 @@ HAVAINNOT_POLKU = os.environ.get("KAUPPA_HAVAINNOT", "/srv/kauppa/havainnot/hava
 PV_MS = 86400000
 
 
+# -shm:n luonti vain luku -hakemistossa epaonnistuu koodilla SQLITE_READONLY (8; -wal puuttuu, laajennettu 1544)
+# tai SQLITE_CANTOPEN (14; -wal on olemassa). Lukitus (SQLITE_BUSY 5) ei kuulu naihin.
+SHM_VIRHEKOODIT = (8, 14)
+
+
+class VanhentunutLukuVirhe(sqlite3.OperationalError):
+    """Kanta muuttui tai sen -wal sai dataa immutable-luvun aikana: tulos voisi olla vanhentunut."""
+
+
+def _sormenjalki(polku):
+    """(paatiedoston koko ja muutosaika, -wal:n koko tai None): muuttuu, jos joku kirjoittaa."""
+    st = os.stat(polku)
+    wal = polku + "-wal"
+    return (st.st_size, st.st_mtime_ns, os.path.getsize(wal) if os.path.exists(wal) else None)
+
+
+def _kopioi_muistiin(polku):
+    """Kopioi immutable-tilassa luetun kannan muistiin, jolloin myohemmat luvut eivat nojaa tiedostoon."""
+    src = sqlite3.connect("file:%s?mode=ro&immutable=1" % polku, uri=True, timeout=10)
+    try:
+        kohde = sqlite3.connect(":memory:")
+        src.backup(kohde)
+        return kohde
+    finally:
+        src.close()
+
+
 def _ro(polku):
     """Avaa kannan vain luku -tilassa.
 
-    WAL-tilainen kanta ilman -shm-tiedostoa kaatuu vain luku -hakemistossa (ReadOnlyPaths),
-    koska lukija ei voi luoda -shm:aa. Jos mikaan ei kirjoita (ei -wal-tiedostoa tai se on tyhja),
-    kanta luetaan immutable=1:lla: tuore data on silloin jo paatiedostossa. Jos -wal:ssa on dataa,
-    immutable ei nakisi sita, joten virhe nostetaan eika lueta vanhentunutta tilaa.
+    WAL-tilainen kanta ilman -shm-tiedostoa ei aukea vain luku -hakemistossa (ReadOnlyPaths), koska
+    lukija ei voi luoda -shm:aa; virhekoodi on SQLITE_READONLY (8) tai SQLITE_CANTOPEN (14). Vain nama
+    ohjaavat varatielle. Muut virheet, kuten `database is locked`, nostetaan: lukitus tarkoittaa, etta joku
+    kirjoittaa, eika silloin saa lukea immutable-tilassa.
+    Varatie: jos -wal puuttuu tai on tyhja, kanta kopioidaan muistiin immutable=1-tilassa ja
+    -wal:n koko seka paatiedoston koko ja muutosaika tarkistetaan ennen ja jalkeen kopioinnin.
+    Jos jokin muuttui (kirjoittaja ehti mukaan), nostetaan VanhentunutLukuVirhe. Jos -wal:ssa on dataa,
+    virhe nostetaan heti. Rajaus: tarkistus perustuu tiedostojen tilaan, joten se on vahva mutta ei
+    absoluuttinen takuu (sekunnin murto-osan sisalla alkava ja loppuva kirjoitus ilman nakyvaa jalkea).
     """
     con = sqlite3.connect("file:%s?mode=ro" % polku, uri=True, timeout=10)
     try:
         con.execute("SELECT count(*) FROM sqlite_master").fetchone()
         return con
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as e:
         con.close()
-        wal = polku + "-wal"
-        if os.path.exists(wal) and os.path.getsize(wal) > 0:
+        koodi = getattr(e, "sqlite_errorcode", None)
+        if koodi is None or (koodi & 0xFF) not in SHM_VIRHEKOODIT or not os.path.exists(polku):
             raise
-    con = sqlite3.connect("file:%s?mode=ro&immutable=1" % polku, uri=True, timeout=10)
-    try:
-        con.execute("SELECT count(*) FROM sqlite_master").fetchone()
-    except sqlite3.Error:
-        con.close()
-        raise
-    return con
+    ennen = _sormenjalki(polku)
+    if ennen[2]:
+        raise VanhentunutLukuVirhe("-wal sisaltaa dataa eika -shm:aa voi luoda")
+    kopio = _kopioi_muistiin(polku)
+    if _sormenjalki(polku) != ennen:
+        kopio.close()
+        raise VanhentunutLukuVirhe("kanta muuttui immutable-luvun aikana")
+    return kopio
 
 
 def lue_salkku(polku):
