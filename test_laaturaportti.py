@@ -21,6 +21,22 @@ class LaskeTesti(unittest.TestCase):
         self.assertEqual(m[("paiva", "pro")]["virhekoodit"], {"LLMVirhe": 1})
         self.assertAlmostEqual(m[("paiva", "flash")]["kelpo_osuus"], 1.0)
 
+    def test_kaikki_hylatty_erillaan_ja_kuivan_portti_ennallaan(self):
+        rs = [rivi("k7_kuiva", "pro", "kaikki_hylatty", ehdotettu=3, kelvollinen=0, hylatty=3, tuplia=0, hylkaykset="hyp_lyhyt:2,ei_olio:1"),
+              rivi("k7_kuiva", "pro", "ok", ehdotettu=3, kelvollinen=3, hylatty=0, tuplia=0),
+              rivi("k7_kuiva", "pro", "ei_tietoa", ehdotettu=0, kelvollinen=0, hylatty=0, tuplia=0, hylkaykset="rikki"),
+              rivi("k7_kuiva", "flash", "ok", ehdotettu=3, kelvollinen=3, hylatty=0, tuplia=0)]
+        m = lr.laske(rs)[("k7_kuiva", "pro")]
+        self.assertEqual((m["ok"], m["ei_tietoa"], m["kaikki_hylatty"]), (1, 1, 1))
+        self.assertEqual(m["hylkayssyyt"], {"hyp_lyhyt": 2, "ei_olio": 1})
+        self.assertAlmostEqual(m["kelv_osuus"], 0.5)    # portti ennallaan: ehdotettu 6, kelvollinen 3
+        mm = lr.laske(rs)
+        self.assertIn("kaikki_hylatty 1", lr.teksti(mm, lr.portti(mm)))
+
+    def test_vanhat_rivit_ilman_uusia_kenttia(self):
+        m = lr.laske([rivi("paiva", "pro", "ok")])[("paiva", "pro")]
+        self.assertEqual((m["kaikki_hylatty"], m["hylkayssyyt"]), (0, {}))
+
     def test_portti_paiva(self):
         rs = [rivi("paiva", "pro", "ok", keksitty=0)] * 20 + [rivi("paiva", "flash", "ok", keksitty=0)] * 18 + [rivi("paiva", "flash", "virhe", virhekoodi="X")] * 2
         p = lr.portti(lr.laske(rs))[("paiva", "flash")]
