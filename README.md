@@ -29,6 +29,13 @@ This is a learning and portfolio project. **Nothing here is financial advice and
 `python3 ab_tilasto.py` compares the flash and pro portfolios (read-only): daily-return difference, Sharpe, max drawdown,
 paired block-bootstrap CI and the number of days needed for significance. Tests: `test_ab_tilasto.py` (synthetic data).
 
+## Daily portfolio report
+
+`python3 salkkuraportti.py --salkku-db <salkku.db> [--viikko] [--ei-tg]` prints (and sends to Telegram) a read-only report of
+at most 6 lines: value and change (EUR and %), trades and costs, max drawdown so far, the same starting capital as a passive
+monthly purchase (`mittarit.passiiviset`), and one sentence on what the agent did. `--viikko` adds the weekly summary
+(who is ahead, worst day, how often the daily trade limit was hit). Tests: `test_salkkuraportti.py`.
+
 ## Tests
 
 ```
