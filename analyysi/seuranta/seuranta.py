@@ -61,13 +61,46 @@ def lue_btc(hakemisto):
     return avaus, sulku
 
 
-def lue_salkku(hakemisto, nimi):
+def lue_salkku_laaja(hakemisto, nimi):
+    """Palauttaa (alkupaoma, [(paiva, arvo)], {paiva: (kateinen, positiot_arvo)}).
+    Jos arvot-taulussa ei ole sarakkeita kateinen ja positiot_arvo (vanha kanta),
+    kolmas on tyhja sanakirja: kateisosuutta ei voi laskea ("?")."""
     c = avaa(hakemisto, nimi + ".db")
     tila = dict(c.execute("select avain,arvo from tila").fetchall())
     alku = float(tila["alkupaoma"])
-    rivit = [(date.fromisoformat(p), float(a)) for p, a in
-             c.execute("select paiva,arvo from arvot order by paiva")]
+    sarakkeet = {r[1] for r in c.execute("pragma table_info(arvot)")}
+    on_osuus = {"kateinen", "positiot_arvo"} <= sarakkeet
+    kysely = "select paiva,arvo%s from arvot order by paiva" % (
+        ",kateinen,positiot_arvo" if on_osuus else "")
+    rivit, osuudet = [], {}
+    for r in c.execute(kysely):
+        p = date.fromisoformat(r[0])
+        rivit.append((p, float(r[1])))
+        if on_osuus and r[2] is not None and r[3] is not None:
+            osuudet[p] = (float(r[2]), float(r[3]))
+    return alku, rivit, osuudet
+
+
+def lue_salkku(hakemisto, nimi):
+    alku, rivit, _ = lue_salkku_laaja(hakemisto, nimi)
     return alku, rivit
+
+
+def sijoitusaste(jakso, arvot, osuudet):
+    """Palauttaa (viimeisen paivan kateisosuus, jakson keskimaarainen sijoitusaste w).
+    Kumpikin on None, jos jonkin jakson paivan osuus puuttuu tai arvo on 0 (tulostuu "?").
+    Sijoitusaste = positiot_arvo / arvo; kateisosuus = kateinen / arvo."""
+    ast = []
+    for p in jakso:
+        if p not in osuudet or not arvot.get(p):
+            return None, None
+        ast.append(osuudet[p][1] / arvot[p])
+    kat, _ = osuudet[jakso[-1]]
+    return kat / arvot[jakso[-1]], sum(ast) / len(ast)
+
+
+def pros(x):
+    return "?" if x is None else "%.1f %%" % (x * 100)
 
 
 def salkun_sarja(nimi, alku, arvot, jakso):
@@ -103,6 +136,14 @@ def ostopaivat(jakso):
 def ostopaivat_vali(jakso, vali=VALI_B):
     """Tapa B: jakson ensimmainen paiva ja siita joka vali:s paiva (indeksit 0, vali, 2*vali, ...)."""
     return {p for i, p in enumerate(jakso) if i % vali == 0}
+
+
+def passiivi_w(jakso, avaus, sulku, w):
+    """BTC samalla keskimaaraisella sijoitusasteella w: arvo = (1 - w) + w * BTC_t / BTC_0,
+    yksi ostokulu (KULU) jakson ensimmaisen paivan avauskurssilla. w=1 on sama kuin osta ja pida.
+    w tiedetaan vasta jalkikateen, joten tama ei ole toteutettavissa oleva tapa."""
+    q = w / (avaus[ms(jakso[0])] * (1 + KULU))
+    return [1.0] + [(1 - w) + q * sulku[ms(p)] for p in jakso]
 
 
 def passiivi_vali(jakso, avaus, sulku, vali=VALI_B):
@@ -174,9 +215,9 @@ def bootstrap(x, rng, lohko=LOHKO, toistoja=TOISTOJA):
 def laske(hakemisto, loppu=None, min_paivat=MIN_PAIVAT_VALI):
     """Palauttaa sanakirjan: jakso, salkut ja passiiviset. Ei tulosta mitaan."""
     avaus, sulku = lue_btc(hakemisto)
-    data = {n: lue_salkku(hakemisto, n) for n in SALKUT}
-    alut = [rivit[0][0] for _, rivit in data.values() if rivit]
-    loput = [rivit[-1][0] for _, rivit in data.values() if rivit]
+    data = {n: lue_salkku_laaja(hakemisto, n) for n in SALKUT}
+    alut = [rivit[0][0] for _, rivit, _o in data.values() if rivit]
+    loput = [rivit[-1][0] for _, rivit, _o in data.values() if rivit]
     if not alut:
         raise ValueError("salkuissa ei ole arvorivej\u00e4")
     a, b = max(alut), min(loput)
@@ -199,14 +240,21 @@ def laske(hakemisto, loppu=None, min_paivat=MIN_PAIVAT_VALI):
     rng = random.Random(SIEMEN)
     salkut = []
     for nimi in SALKUT:
-        alku, rivit = data[nimi]
+        alku, rivit, osuudet = data[nimi]
         arvot = {p: x for p, x in rivit}
         if any(p not in arvot for p in jakso):
             raise ValueError("%s: arvorivi puuttuu jaksolta" % nimi)
         v = salkun_sarja(nimi, alku, arvot, jakso)
         r = paivatuotot(v)
-        rivi = {"nimi": nimi, "tuotto": v[-1] / v[0] - 1, "pudotus": pudotus(v), "vertailut": []}
-        for pn, pt, pd, pr in passiiviset:
+        kateinen, w = sijoitusaste(jakso, arvot, osuudet)
+        rivi = {"nimi": nimi, "tuotto": v[-1] / v[0] - 1, "pudotus": pudotus(v), "vertailut": [],
+                "kateinen": kateinen, "w": w}
+        vertailtavat = list(passiiviset)
+        if w is not None:
+            ww = passiivi_w(jakso, avaus, sulku, w)
+            vertailtavat.append(("BTC, sijoitusaste %.1f %%" % (w * 100), ww[-1] - 1, pudotus(ww),
+                                 paivatuotot(ww)))
+        for pn, pt, pd, pr in vertailtavat:
             vali = None
             if len(jakso) >= min_paivat:
                 vali = bootstrap([x - y for x, y in zip(r, pr)], rng)
@@ -248,6 +296,8 @@ def muotoile(t, tuoreus_teksti):
         rivit.append("")
         rivit.append("%s: tuotto kulujen j\u00e4lkeen %s, suurin pudotus %.2f %%" % (
             s["nimi"], pp(s["tuotto"]), s["pudotus"] * 100))
+        rivit.append("  k\u00e4teisosuus viimeisen\u00e4 p\u00e4iv\u00e4n\u00e4: %s, jakson keskim\u00e4\u00e4r\u00e4inen sijoitusaste w: %s" % (
+            pros(s.get("kateinen")), pros(s.get("w"))))
         rivit.append("  %-34s %10s %10s %10s  %s" % ("vertailu", "tuotto", "pudotus", "ero", "ero, 90 %:n v\u00e4li (pp/pv)"))
         for v in s["vertailut"]:
             if v["vali"] is None:
@@ -257,7 +307,13 @@ def muotoile(t, tuoreus_teksti):
             rivit.append("  %-34s %10s %9.2f%% %10s  %s" % (
                 v["nimi"], pp(v["tuotto"]), v["pudotus"] * 100,
                 "%+.2f pp" % (v["ero"] * 100), vali))
+    if any(s.get("w") is not None for s in t["salkut"]):
+        rivit.append("")
+        rivit.append("Huom: sijoitusaste w tiedet\u00e4\u00e4n vasta j\u00e4lkik\u00e4teen, joten \"BTC, sijoitusaste\"-rivi kuvaa "
+                     "riskitasoa eik\u00e4 ole toteutettavissa oleva tapa.")
     rivit.append("")
+    if t["paivia"] < MIN_PAIVAT_VALI:
+        rivit.append("Vertailusta ei voi p\u00e4\u00e4tell\u00e4 mit\u00e4\u00e4n: p\u00e4ivi\u00e4 %d < %d." % (t["paivia"], MIN_PAIVAT_VALI))
     if t["paivia"] < TAVOITE_PAIVAT:
         rivit.append("Johtop\u00e4\u00e4t\u00f6ksi\u00e4 ei tehd\u00e4: p\u00e4ivi\u00e4 %d/%d." % (t["paivia"], TAVOITE_PAIVAT))
     return "\n".join(rivit)
