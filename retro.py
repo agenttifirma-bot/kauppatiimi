@@ -466,6 +466,11 @@ def main_paiva(tanaan, salkut, havainnot_polku):
             raaka[nimi] = lue_salkku(polku)
         except sqlite3.Error as e:
             print("%s: kantaa ei voi lukea (%s)" % (nimi, type(e).__name__))
+    if salkut and not any(raaka.values()):
+        # Yksikaan salkku ei ollut luettavissa (kanta puuttuu tai virhe): ei ole "ei uutta paivaa", vaan vika. Nollasta poikkeava
+        # koodi nakyy systemd-yksikon tilassa, eika havainnot.md:aa kirjoiteta.
+        print("Paivatila %s: yhtaan salkkua ei voitu lukea (%d salkkua), havainnot.md ennallaan" % (tanaan.isoformat(), len(salkut)))
+        return 1
     rivi = paivarivi(tanaan, raaka)
     if rivi is None:
         print("Paivatila %s: ei uutta salkkupaivaa, havainnot.md ennallaan" % tanaan.isoformat())

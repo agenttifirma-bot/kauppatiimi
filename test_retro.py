@@ -1,3 +1,5 @@
+import io
+from contextlib import redirect_stdout
 import json
 import os
 import shutil
@@ -320,6 +322,36 @@ class PaivatilaTesti(RetroTesti):
         self.salkku(self.a, 10)
         self.assertEqual(retro.main_paiva(self.tanaan(10) + timedelta(days=5), {"flash": self.a}, self.polku), 0)
         self.assertFalse(os.path.exists(self.polku))
+
+    def test_main_paiva_palauttaa_virhekoodin_kun_yhtaan_salkkua_ei_voi_lukea(self):
+        puuttuva = os.path.join(self.d.name, "ei-ole.db")
+        rikki = os.path.join(self.d.name, "rikki.db")
+        with open(rikki, "wb") as f:
+            f.write(b"ei ole sqlite-kanta" * 50)
+        for salkut in ({"flash": puuttuva}, {"flash": rikki, "pro": puuttuva}):
+            with self.subTest(salkut=sorted(salkut)), redirect_stdout(io.StringIO()) as ulos:
+                self.assertEqual(retro.main_paiva(self.tanaan(10), salkut, self.polku), 1)
+            self.assertFalse(os.path.exists(self.polku))
+            self.assertIn("ennallaan", ulos.getvalue())
+
+    def test_main_paiva_yksi_salkku_riittaa_nollakoodiin(self):
+        self.salkku(self.a, 10)
+        puuttuva = os.path.join(self.d.name, "ei-ole.db")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(retro.main_paiva(self.tanaan(10), {"flash": self.a, "pro": puuttuva}, self.polku), 0)
+        self.assertIn("- " + self.tanaan(10).isoformat(), self.teksti())
+
+    def test_paivarivi_ensimmaisella_paivalla_kayttaa_tilan_alkupaomaa(self):
+        # s["tila"]-haara: vain yksi arvorivi -> edellinen arvo tulee tilan "alkupaoma"-avaimesta
+        self.salkku(self.a, 1, kerroin=0.0)
+        s = retro.lue_salkku(self.a)
+        s["tila"]["alkupaoma"] = "20000"          # arvo 10000 -> -50 % alkupaomaan nahden
+        r = retro.paivarivi(self.tanaan(1), {"flash": s})
+        self.assertIn("flash -50.00 %", r)
+        self.assertIn("TAPPIO", r)
+        del s["tila"]["alkupaoma"]                # puuttuva avain -> rajat.ALKUPAOMA
+        r2 = retro.paivarivi(self.tanaan(1), {"flash": s})
+        self.assertIn("flash %+.2f %%" % (100 * (10000.0 / float(rajat.ALKUPAOMA) - 1)), r2)
 
 
 class VainLukuPohja(unittest.TestCase):
