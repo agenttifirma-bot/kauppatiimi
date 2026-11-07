@@ -227,8 +227,34 @@ def aja_paiva(con, markkina, paiva):
     historia = [float(salkku._hae(con, "alkupaoma"))] + [float(r[0]) for r in con.execute("SELECT arvo FROM arvot ORDER BY paiva")]
     dd = pudotus(historia)
     laheta, uusi = halytys_tarvitaan(dd, salkku._hae(con, "halytetty") == "1")
-    salkku._aseta(con, "halytetty", "1" if uusi else "0")
+    if not laheta:
+        # Nollaus on turvallinen heti. Tilaa "halytetty=1" EI kirjata tassa: kuittaa_halytys() kirjaa sen vasta,
+        # kun lahetys onnistui, jotta epaonnistunut halytys yritetaan uudelleen.
+        salkku._aseta(con, "halytetty", "1" if uusi else "0")
     return {"paiva": pstr, "arvo": arvo, "kaupat": kaupat, "huomautukset": huom, "dd": dd, "halytys": laheta, "eria": eria}
+
+
+def kuittaa_halytys(con):
+    """Kirjaa halytyksen lahetetyksi. Kutsutaan vasta, kun notify.laheta palautti True."""
+    salkku._aseta(con, "halytetty", "1")
+
+
+def odottava_halytys(con):
+    """Halytys, jota ei ole viela kuitattu (aiempi lahetys epaonnistui), tai None. Lukee vain tallennetun historian."""
+    historia = [float(salkku._hae(con, "alkupaoma"))] + [float(r[0]) for r in con.execute("SELECT arvo FROM arvot ORDER BY paiva")]
+    dd = pudotus(historia)
+    if len(historia) < 2 or not halytys_tarvitaan(dd, salkku._hae(con, "halytetty") == "1")[0]:
+        return None
+    return {"paiva": salkku._hae(con, "viimeisin_paiva"), "arvo": historia[-1], "dd": dd}
+
+
+def laheta_halytys(con, t, env_tg):
+    """Lahettaa halytyksen ja kuittaa sen vain onnistuneen lahetyksen jalkeen. Palauttaa True/False."""
+    if notify.laheta(halytysteksti(t), env_tg):
+        kuittaa_halytys(con)
+        return True
+    print("passiivinen_kk %s: halytyksen lahetys epaonnistui, yritetaan uudelleen seuraavalla ajolla" % t["paiva"])
+    return False
 
 
 def aloituspaiva_puuttuu(con):
@@ -293,6 +319,9 @@ def main():
             p += timedelta(days=1)
     if not paivat:
         print("ei uutta paivaa")
+        t = odottava_halytys(con)
+        if t is not None and not a.ei_tg:
+            laheta_halytys(con, t, env_tg)
         return 0
     for p in paivat:
         try:
@@ -302,7 +331,7 @@ def main():
             return 2
         print(raportti(t, con, markkina))
         if t["halytys"] and not a.ei_tg:
-            notify.laheta(halytysteksti(t), env_tg)
+            laheta_halytys(con, t, env_tg)
     return 0
 
 

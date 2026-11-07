@@ -32,7 +32,7 @@ paired block-bootstrap CI and the number of days needed for significance. Tests:
 ## Passive paper portfolio and comparison
 
 `passiivinen_kk.py` runs the paper portfolio `passiivinen_kk` (BTC, 12 equal monthly buys of start capital / 12, never sells, real fees and slippage,
-Telegram alert at -30 % from peak; alert only, nothing is changed). `passiivinen_vertailu.py` compares BTC, S&P 500 (price index, via `indeksidata.py`) and
+Telegram alert at -30 % from peak; alert only, nothing is changed). `passiivinen_vertailu.py` compares BTC, S&P 500 (price index, read by `indeksidata.py` from a CSV file that the owner downloads manually; the code fetches nothing from the network) and
 80/20 and 50/50 mixes from 12 different start months, read-only; the holdout stays locked. Tests: `test_passiivinen_kk.py`.
 
 ## Daily portfolio report

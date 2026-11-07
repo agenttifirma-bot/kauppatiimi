@@ -173,7 +173,15 @@ class ElavaSalkkuTesti(unittest.TestCase):
         # 12 eraa vakiohinnalla (360 pv), sitten hinta putoaa 40 %
         alku = date(2026, 1, 1)
         n = 420
-        con, t = self.aja(alku, n, sulku=lambda i: 100.0 if i < 380 else 60.0)
+        markkina_kanta(self.mk, alku, n, sulku=lambda i: 100.0 if i < 380 else 60.0)
+        mk = db.avaa(self.mk)
+        con = salkku.avaa(self.sal)
+        t = []
+        for i in range(n):
+            x = pk.aja_paiva(con, mk, alku + timedelta(days=i))
+            if x["halytys"]:
+                pk.kuittaa_halytys(con)   # main kuittaa vasta onnistuneen lahetyksen jalkeen
+            t.append(x)
         halytykset = [x["paiva"] for x in t if x["halytys"]]
         self.assertEqual(len(halytykset), 1)
         self.assertTrue(halytykset[0] >= (alku + timedelta(days=380)).isoformat())
@@ -231,25 +239,85 @@ class ElavaSalkkuTesti(unittest.TestCase):
         self.assertEqual(laheta.call_count, 1)
         self.assertIn("HALYTYS", laheta.call_args[0][0])
 
+    def _halytysvalmis(self):
+        alku = date(2026, 1, 1)
+        markkina_kanta(self.mk, alku, 420, sulku=lambda i: 100.0 if i < 380 else 60.0)
+        env = os.path.join(self.tmp.name, "tg.env")
+        with open(env, "w") as f:
+            f.write("TELEGRAM_BOT_TOKEN=x\nTELEGRAM_CHAT_ID=1\n")
+        con = salkku.avaa(self.sal)
+        mk = db.avaa(self.mk)
+        for i in range(379):
+            pk.aja_paiva(con, mk, alku + timedelta(days=i))
+        con.close()
+        return env
+
+    def _aja_main(self, env, onnistuu):
+        with redirect_stdout(io.StringIO()), mock.patch.object(rajat, "PYSAYTYS", os.path.join(self.tmp.name, "ei")), \
+                mock.patch("passiivinen_kk.notify.laheta", return_value=onnistuu) as laheta, \
+                mock.patch("sys.argv", ["x", "--salkku-db", self.sal, "--markkina-db", self.mk, "--tg-env", env]):
+            self.assertEqual(pk.main(), 0)
+        return laheta
+
+    def test_epaonnistunutta_halytysta_ei_kuitata_ja_se_yritetaan_uudelleen(self):
+        env = self._halytysvalmis()
+        self._aja_main(env, onnistuu=False)
+        con = salkku.avaa(self.sal)
+        self.assertNotEqual(salkku._hae(con, "halytetty"), "1")
+        con.close()
+        # ei uutta paivaa, mutta kuittaamaton halytys yritetaan silti uudelleen ja onnistuu
+        laheta = self._aja_main(env, onnistuu=True)
+        self.assertEqual(laheta.call_count, 1)
+        con = salkku.avaa(self.sal)
+        self.assertEqual(salkku._hae(con, "halytetty"), "1")
+        con.close()
+        # kuitattu halytys ei lahde enaa
+        laheta = self._aja_main(env, onnistuu=True)
+        self.assertEqual(laheta.call_count, 0)
+
+    def test_onnistunut_halytys_kuitataan_ja_lahtee_kerran(self):
+        env = self._halytysvalmis()
+        laheta = self._aja_main(env, onnistuu=True)
+        self.assertEqual(laheta.call_count, 1)
+        con = salkku.avaa(self.sal)
+        self.assertEqual(salkku._hae(con, "halytetty"), "1")
+
 
 class IndeksidataTesti(unittest.TestCase):
-    def test_jasenna_ohittaa_puuttuvat_ja_lajittelee(self):
-        a = int(datetime(2026, 1, 6, 14, 30, tzinfo=timezone.utc).timestamp())
-        b = int(datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc).timestamp())
-        c = int(datetime(2026, 1, 7, 14, 30, tzinfo=timezone.utc).timestamp())
-        teksti = json.dumps({"chart": {"result": [{"timestamp": [a, b, c], "indicators": {"quote": [
-            {"open": [10.0, 9.0, None], "close": [11.0, 9.5, 12.0]}]}}]}})
-        rivit = indeksidata.jasenna(teksti)
-        self.assertEqual([r[0] for r in rivit], [date(2026, 1, 5), date(2026, 1, 6)])
-        self.assertEqual(rivit[0][1:], (9.0, 9.5))
+    def _csv(self, d, teksti):
+        polku = os.path.join(d, "i.csv")
+        with open(polku, "w") as f:
+            f.write(teksti)
+        return polku
 
-    def test_csv_kierto(self):
+    def test_lue_csv(self):
         with tempfile.TemporaryDirectory() as d:
-            polku = os.path.join(d, "i.csv")
-            indeksidata.kirjoita([(date(2026, 1, 5), 9.0, 9.5), (date(2026, 1, 6), 10.0, 11.0)], polku)
-            h = indeksidata.lue(polku)
+            h = indeksidata.lue(self._csv(d, "paiva,open,close\n2026-01-05,9.0,9.5\n2026-01-06,10.0,11.0\n"))
         self.assertEqual(h["open"][date(2026, 1, 6)], 10.0)
         self.assertEqual(h["close"][date(2026, 1, 5)], 9.5)
+
+    def test_virheelliset_tiedostot_nostavat_valueerrorin(self):
+        huonot = ["paiva,open\n2026-01-05,9.0\n", "paiva,open,close\n", "paiva,open,close\n2026-01-05,0,9.5\n",
+                  "paiva,open,close\nei-paiva,9.0,9.5\n", "paiva,open,close\n2026-01-05,x,9.5\n"]
+        with tempfile.TemporaryDirectory() as d:
+            for teksti in huonot:
+                with self.assertRaises(ValueError, msg=teksti):
+                    indeksidata.lue(self._csv(d, teksti))
+
+    def test_moduuli_ei_kayta_verkkoa_eika_esittaudu_selaimeksi(self):
+        import ast
+        with open(indeksidata.__file__) as f:
+            lahde = f.read()
+        tuodut = set()
+        for n in ast.walk(ast.parse(lahde)):
+            if isinstance(n, ast.Import):
+                tuodut |= {a.name.split(".")[0] for a in n.names}
+            elif isinstance(n, ast.ImportFrom):
+                tuodut.add(n.module.split(".")[0])
+        self.assertFalse(tuodut & {"urllib", "socket", "http", "requests", "ssl"}, tuodut)
+        self.assertNotIn("Mozilla", lahde)
+        self.assertNotIn("User-Agent", lahde)
+        self.assertFalse(hasattr(indeksidata, "hae"))
 
 
 class VertailuTesti(unittest.TestCase):

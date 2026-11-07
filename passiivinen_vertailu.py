@@ -126,7 +126,7 @@ def main(historia, indeksi_csv):
         a_rivit.append(ra), b_rivit.append(rb)
         a_tul.append((nimi, yhteenveto(ra)))
         b_tul.append((nimi, yhteenveto(rb)))
-    print("Lahteet: BTC %s (Binance-arkisto, historia.db), indeksi %s (Yahoo Finance ^GSPC, hintaindeksi ilman osinkoja)." % (
+    print("Lahteet: BTC %s (Binance-arkisto, historia.db), indeksi %s (Tonin itse lataama CSV, hintaindeksi ilman osinkoja)." % (
         historia.split("/")[-1], indeksi_csv.split("/")[-1]))
     print("Jakso: aloitukset %s .. %s (joka %d. kk), data loppuu %s (holdout lukittu)." % (alut[0], alut[-1], VALI_KK, loppu))
     print("Kulut: %.1f %% + %.1f %% slippage per kauppa.\n" % (100 * rajat.KULU, 100 * rajat.SLIPPAGE))
